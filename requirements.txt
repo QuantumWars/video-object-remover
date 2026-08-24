@@ -1,0 +1,9 @@
+# Runtime dependencies for propainter-delogo.
+# PyTorch/torchvision are pulled in by ProPainter's own requirements
+# (see setup_propainter.sh); install the CUDA/MPS/CPU build that matches
+# your machine from https://pytorch.org/ first.
+numpy>=1.23
+opencv-python>=4.6
+# ffmpeg / ffprobe are external binaries, not pip packages:
+#   macOS:  brew install ffmpeg
+#   Debian: apt-get install ffmpeg

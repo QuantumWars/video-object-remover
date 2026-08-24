@@ -1,0 +1,48 @@
+# --- Media (never commit source videos or renders) ---
+*.mp4
+*.mov
+*.MOV
+*.mkv
+*.avi
+*.webm
+*.png
+*.jpg
+*.jpeg
+*.wav
+*.mp3
+*.m4a
+!docs/**/*.png          # allow doc images if any are added later
+
+# --- Working data / intermediate artifacts ---
+work/
+_work*/
+frames/
+_frames*/
+out/
+output/
+*.log
+
+# --- Third-party model + weights (installed via setup script) ---
+third_party/
+ProPainter/
+weights/
+*.pth
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+*.egg-info/
+.eggs/
+build/
+dist/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# --- OS / editor ---
+.DS_Store
+.idea/
+.vscode/

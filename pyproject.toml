@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "video-object-remover"
+version = "0.1.0"
+description = "Remove moving or static objects from video with SAM 2 rotoscoping + ProPainter inpainting."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.9"
+authors = [{ name = "QuantumWars" }]
+keywords = ["video", "inpainting", "object-removal", "sam", "sam2", "rotoscoping",
+            "watermark", "propainter", "ffmpeg"]
+classifiers = [
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Multimedia :: Video",
+]
+dependencies = [
+    "numpy>=1.23",
+    "opencv-python>=4.6",
+]
+
+[project.urls]
+Homepage = "https://github.com/QuantumWars/video-object-remover"
+Issues = "https://github.com/QuantumWars/video-object-remover/issues"
+
+[project.scripts]
+video-object-remover = "video_object_remover.cli:main"
+
+[tool.setuptools]
+packages = ["video_object_remover"]
