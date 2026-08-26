@@ -96,3 +96,17 @@ def test_index_is_served(client):
     assert r.status_code == 200
     # the click contract is the product; it must be stated on the page
     assert "Left click" in r.text and "Right click" in r.text
+
+
+def test_free_port_returns_preferred_when_available():
+    from video_object_remover.webapp.server import free_port
+    import socket
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        taken = s.getsockname()[1]
+        # while `taken` is held, we must be handed a different port
+        assert free_port("127.0.0.1", taken) != taken
+    # nothing holding it now: a free port is returned and is bindable
+    port = free_port("127.0.0.1", 8765)
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", port))

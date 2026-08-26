@@ -231,8 +231,33 @@ def create_app() -> FastAPI:
     return app
 
 
+def free_port(host: str, preferred: int, tries: int = 20) -> int:
+    """`preferred` if it is free, otherwise the next port that is.
+
+    A packaged app cannot assume its default port is available — 8765 is a
+    popular default and another app may already be listening on it. Failing
+    with "address already in use" is a dead end for someone who launched from
+    the Dock, so take the next free port and say which one.
+    """
+    import socket
+    for port in range(preferred, preferred + tries):
+        with socket.socket() as sock:
+            try:
+                sock.bind((host, port))
+                return port
+            except OSError:
+                continue
+    with socket.socket() as sock:            # let the OS choose
+        sock.bind((host, 0))
+        return sock.getsockname()[1]
+
+
 def serve(host: str = "127.0.0.1", port: int = 8765, open_browser: bool = True) -> None:
     import uvicorn
+    chosen = free_port(host, port)
+    if chosen != port:
+        print(f"[web] port {port} is in use — using {chosen}")
+    port = chosen
     url = f"http://{host}:{port}"
     if open_browser:
         import threading
