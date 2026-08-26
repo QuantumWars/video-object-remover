@@ -10,8 +10,10 @@ path uses.
 ``sam2`` and ``torch`` are imported lazily so the rest of the package works
 without them installed; run ``./setup_sam.sh`` to get the weights.
 
-NOTE: this backend is wired end-to-end but its segmentation quality has not yet
-been validated on a real clip — see docs/SAM.md.
+Validated on a real 577-frame clip: SAM 2 tracked a seated subject cleanly with
+a single click. What failed there was the *inpaint*, because the subject barely
+moved and the background behind them was never filmed — see ``reveal.py``, which
+measures that up front so the run can warn instead of wasting an hour.
 """
 from __future__ import annotations
 import hashlib
@@ -105,7 +107,12 @@ def generate(cfg: PipelineConfig, info: VideoInfo, work: str):
     device = _device()
     predictor = build_sam2_video_predictor(cfg.sam_model_cfg, cfg.sam_checkpoint,
                                            device=device)
-    state = predictor.init_state(video_path=sam_frames)
+    # Offload the frame stack and per-frame state to CPU. SAM 2 otherwise keeps
+    # every frame resident on the accelerator, which is fine for a 577-frame
+    # test and OOMs on a 4426-frame 4K source.
+    state = predictor.init_state(video_path=sam_frames,
+                                 offload_video_to_cpu=True,
+                                 offload_state_to_cpu=True)
 
     obj_id = 1
     if cfg.sam_box is not None:
@@ -136,8 +143,12 @@ def generate(cfg: PipelineConfig, info: VideoInfo, work: str):
         if frame_idx < len(bboxes):
             bboxes[frame_idx] = _bbox(m)
 
+    done = 0
     for out_idx, _obj_ids, logits in predictor.propagate_in_video(state):
         _save(out_idx, logits)
+        done += 1
+        if done % 25 == 0 or done == info.nframes:
+            print(f"[sam] tracked {done}/{info.nframes}", flush=True)
     if cfg.sam_frame > 0:  # cover frames before the prompt
         for out_idx, _obj_ids, logits in predictor.propagate_in_video(
                 state, start_frame_idx=cfg.sam_frame, reverse=True):
@@ -187,3 +198,54 @@ def preview(cfg: PipelineConfig, info: VideoInfo, out_path: str) -> None:
     overlay[m] = (0.4 * overlay[m] + 0.6 * np.array([0, 255, 0])).astype(np.uint8)
     cv2.imwrite(out_path, overlay)
     os.remove(tmp)
+
+
+class InteractivePreview:
+    """A SAM 2 image predictor kept warm on one frame.
+
+    ``set_image`` is the expensive call (it runs the image encoder); re-running
+    it on every click makes point-and-refine selection feel broken. This holds
+    the encoded frame so each additional click is only a mask-decoder pass —
+    milliseconds instead of seconds. Used by the web UI, where left-click adds a
+    foreground point and right-click adds a background point.
+    """
+
+    def __init__(self, checkpoint: str, model_cfg: str, frame_bgr: np.ndarray):
+        from sam2.build_sam import build_sam2
+        from sam2.sam2_image_predictor import SAM2ImagePredictor
+
+        os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+        self._predictor = SAM2ImagePredictor(
+            build_sam2(model_cfg, checkpoint, device=_device()))
+        self._predictor.set_image(cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB))
+        self.shape = frame_bgr.shape[:2]
+
+    def mask(self, points: list[tuple[int, int, int]]) -> Optional[np.ndarray]:
+        """Mask for ``[(x, y, label)]`` (label 1 = keep/foreground, 0 = exclude).
+        Returns a uint8 0/255 mask, or None if there are no foreground points."""
+        if not any(lab == 1 for *_ , lab in points):
+            return None
+        pts = np.array([[x, y] for x, y, _ in points], dtype=np.float32)
+        labels = np.array([lab for *_, lab in points], dtype=np.int32)
+        masks, scores, _ = self._predictor.predict(
+            point_coords=pts, point_labels=labels, multimask_output=False)
+        return (masks[0].astype(np.uint8) * 255)
+
+
+def overlay(frame_bgr: np.ndarray, mask: Optional[np.ndarray],
+            points: list[tuple[int, int, int]] = ()) -> np.ndarray:
+    """Draw a mask tint plus click markers on a frame, for UI preview.
+    Foreground clicks are green, background clicks red — matching the mouse
+    buttons that create them."""
+    out = frame_bgr.copy()
+    if mask is not None:
+        sel = mask > 0
+        out[sel] = (0.45 * out[sel] + 0.55 * np.array([0, 220, 0])).astype(np.uint8)
+        edges = cv2.dilate(mask, np.ones((3, 3), np.uint8)) - mask
+        out[edges > 0] = (255, 255, 255)
+    r = max(4, int(round(min(out.shape[:2]) * 0.008)))
+    for x, y, lab in points:
+        colour = (60, 220, 60) if lab == 1 else (60, 60, 235)
+        cv2.circle(out, (int(x), int(y)), r + 2, (255, 255, 255), -1, cv2.LINE_AA)
+        cv2.circle(out, (int(x), int(y)), r, colour, -1, cv2.LINE_AA)
+    return out
