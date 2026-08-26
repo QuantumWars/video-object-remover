@@ -36,6 +36,29 @@ command -v ffmpeg >/dev/null 2>&1 || die "ffmpeg not found. Install it with: bre
 
 mkdir -p "$SUPPORT"
 
+# Install the bundled wheel, but only when it differs from what is already
+# there — reinstalling on every launch would add seconds to a warm start.
+install_wheel() {
+  local wheel marker
+  wheel="$(ls "$RES"/video_object_remover-*.whl 2>/dev/null | head -1)"
+  [ -n "$wheel" ] || die "the app bundle is missing its wheel — rebuild the DMG"
+  marker="$SUPPORT/.installed-wheel"
+  # Compare by content hash, not filename: a rebuild at the same version has an
+  # identical name but different code, and that is exactly the case a filename
+  # check would silently skip.
+  local sum
+  sum="$(shasum -a 256 "$wheel" | cut -d" " -f1)"
+  if [ "$(cat "$marker" 2>/dev/null)" = "$sum" ]; then
+    return 0
+  fi
+  say "Installing $(basename "$wheel")"
+  # Braces matter: a bare $wheel[web] is array-subscript syntax in some shells.
+  python -m pip install --quiet --upgrade --force-reinstall --no-deps "${wheel}" \
+    || die "app install failed"
+  python -m pip install --quiet "${wheel}[web]" || die "dependency install failed"
+  printf '%s' "$sum" > "$marker"
+}
+
 # --- one-time environment -------------------------------------------------
 if [ ! -f "$STAMP" ]; then
   say "First launch — setting up. This downloads ~4 GB and takes 10-20 minutes."
@@ -51,10 +74,7 @@ if [ ! -f "$STAMP" ]; then
   python -m pip install --quiet torch torchvision || die "torch install failed"
 
   say "Installing the app"
-  WHEEL="$(ls "$RES"/video_object_remover-*.whl 2>/dev/null | head -1)"
-  [ -n "$WHEEL" ] || die "the app bundle is missing its wheel — rebuild the DMG"
-  # Braces matter: a bare $WHEEL[web] is array-subscript syntax in some shells.
-  python -m pip install --quiet "${WHEEL}[web]" || die "app install failed"
+  install_wheel
 
   say "Fetching ProPainter + weights (~200 MB)"
   bash "$RES/setup_propainter.sh" "$SUPPORT/ProPainter" || die "ProPainter setup failed"
@@ -69,6 +89,9 @@ if [ ! -f "$STAMP" ]; then
 else
   # shellcheck disable=SC1091
   source "$VENV/bin/activate"
+  # A newer DMG ships a newer wheel, but setup only runs once — without this the
+  # app bundle would update while the code it actually runs stayed behind.
+  install_wheel
 fi
 
 # --- launch ---------------------------------------------------------------
