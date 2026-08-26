@@ -46,3 +46,8 @@ dist/
 .DS_Store
 .idea/
 .vscode/
+
+# --- packaging output ---
+packaging/build/
+*.dmg
+*.icns
