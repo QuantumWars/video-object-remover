@@ -5,8 +5,13 @@
 set -euo pipefail
 
 DEST="${1:-third_party/sam2}"
+# Checkpoint size: tiny | small | base_plus | large.
+#   large     ~900MB, best masks, slowest first click
+#   base_plus ~320MB, the packaged app's default — the quality/latency sweet spot
+SIZE="${2:-large}"
 REPO="https://github.com/facebookresearch/sam2.git"
-CKPT_URL="https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_large.pt"
+CKPT_NAME="sam2.1_hiera_${SIZE}.pt"
+CKPT_URL="https://dl.fbaipublicfiles.com/segment_anything_2/092824/${CKPT_NAME}"
 
 mkdir -p "$(dirname "$DEST")"
 if [ ! -d "$DEST/.git" ]; then
@@ -19,10 +24,10 @@ fi
 echo ">> installing SAM 2 (pip install -e)"
 python3 -m pip install -e "$DEST"
 
-echo ">> downloading sam2.1_hiera_large checkpoint"
+echo ">> downloading $CKPT_NAME"
 mkdir -p "$DEST/checkpoints"
-CKPT="$DEST/checkpoints/sam2.1_hiera_large.pt"
-[ -f "$CKPT" ] || curl -sSL -o "$CKPT" "$CKPT_URL"
+CKPT="$DEST/checkpoints/$CKPT_NAME"
+[ -f "$CKPT" ] || curl -fsSL -o "$CKPT" "$CKPT_URL"
 
-echo ">> done."
-echo "   run/sam-preview with:  --sam-checkpoint $CKPT --sam-config configs/sam2.1/sam2.1_hiera_l.yaml"
+echo ">> done. $CKPT"
+echo "   The CLI discovers this automatically; --sam-config is inferred from the filename."
