@@ -1,0 +1,106 @@
+"""Checks that run before any expensive work starts.
+
+Every one of these corresponds to a way a run has actually gone wrong, or would
+fail late and confusingly. The principle is the same one the rest of this
+project is built on: fail early with a readable message, never silently produce
+something plausible-looking and wrong.
+"""
+from __future__ import annotations
+import os
+import shutil
+from dataclasses import dataclass
+
+from .config import PipelineConfig, Window
+from .probe import VideoInfo
+
+#: rough bytes per pixel for the PNG sequences we write (frames + inpainted out)
+_PNG_BPP = 2.0
+#: keep this much headroom free rather than filling the disk
+_DISK_HEADROOM = 2 * 1024 ** 3
+
+
+class PreflightError(RuntimeError):
+    """A condition that makes the run pointless to start."""
+
+
+@dataclass
+class Report:
+    warnings: list
+
+
+def check_tools() -> None:
+    """ffmpeg and ffprobe are shelled out to everywhere; a missing binary
+    otherwise surfaces as a FileNotFoundError from deep inside a helper."""
+    missing = [t for t in ("ffmpeg", "ffprobe") if shutil.which(t) is None]
+    if missing:
+        raise PreflightError(
+            f"{' and '.join(missing)} not found on PATH. Install with: "
+            f"brew install ffmpeg (macOS) or apt install ffmpeg (Linux).")
+
+
+def check_source(info: VideoInfo) -> None:
+    if info.nframes <= 0:
+        raise PreflightError(
+            "the source reports zero frames — it may be corrupt or not a video.")
+    if info.width <= 0 or info.height <= 0:
+        raise PreflightError(f"invalid source dimensions {info.width}x{info.height}.")
+
+
+def check_output(path: str) -> None:
+    """Catch an unwritable destination now, not after an hour of inpainting."""
+    if os.path.isdir(path):
+        raise PreflightError(f"output path is a directory: {path}")
+    parent = os.path.dirname(os.path.abspath(path)) or "."
+    if not os.path.isdir(parent):
+        try:
+            os.makedirs(parent, exist_ok=True)
+        except OSError as exc:
+            raise PreflightError(f"cannot create output directory {parent}: {exc}")
+    if not os.access(parent, os.W_OK):
+        raise PreflightError(f"output directory is not writable: {parent}")
+    if os.path.exists(path) and not os.access(path, os.W_OK):
+        raise PreflightError(f"output file is not writable: {path}")
+
+
+def estimate_bytes(window: Window, nframes: int) -> int:
+    """Working-set estimate: window frames in, inpainted frames out, both PNG."""
+    per_frame = window.proc_w * window.proc_h * _PNG_BPP
+    return int(per_frame * nframes * 2)
+
+
+def check_disk(workdir: str, needed: int) -> str | None:
+    """Returns a warning string, or raises if there is plainly not enough room."""
+    probe_dir = workdir
+    while probe_dir and not os.path.isdir(probe_dir):
+        parent = os.path.dirname(probe_dir)
+        if parent == probe_dir:
+            break
+        probe_dir = parent
+    try:
+        free = shutil.disk_usage(probe_dir or "/").free
+    except OSError:
+        return None
+    if free < needed:
+        raise PreflightError(
+            f"not enough disk space: the run needs about "
+            f"{needed / 1024**3:.1f} GB of scratch, {free / 1024**3:.1f} GB free "
+            f"on {probe_dir}. Free some space or lower --proc-scale.")
+    if free < needed + _DISK_HEADROOM:
+        return (f"tight on disk: ~{needed / 1024**3:.1f} GB needed, "
+                f"{free / 1024**3:.1f} GB free")
+    return None
+
+
+def run(cfg: PipelineConfig, info: VideoInfo, window: Window,
+        nframes: int | None = None) -> Report:
+    """All checks. Raises PreflightError on anything fatal; returns warnings."""
+    warnings: list = []
+    check_tools()
+    check_source(info)
+    check_output(cfg.output)
+
+    needed = estimate_bytes(window, nframes or info.nframes)
+    warn = check_disk(cfg.workdir, needed)
+    if warn:
+        warnings.append(warn)
+    return Report(warnings=warnings)

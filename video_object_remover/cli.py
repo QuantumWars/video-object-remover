@@ -84,6 +84,9 @@ def build_parser() -> argparse.ArgumentParser:
     rn.add_argument("--pad", type=int, default=160)
     rn.add_argument("--proc-scale", type=float, default=1.0,
                     help="downscale factor for processing (e.g. 0.5 at 4K)")
+    rn.add_argument("--max-window-pixels", type=int, default=None,
+                    help="safety cap on the processing window area "
+                         "(default 400000; 0 disables)")
     rn.add_argument("--soften", type=float, default=2.5)
     rn.add_argument("--mask-dilation", type=int, default=8)
     rn.add_argument("--feather", type=int, default=4)
@@ -171,6 +174,8 @@ def main(argv: list[str] | None = None) -> int:
         reveal_check=not args.no_reveal_check,
         use_cache=not args.no_cache, cache_dir=args.cache_dir,
         workdir=args.workdir, pad=args.pad, proc_scale=args.proc_scale,
+        **({} if args.max_window_pixels is None
+           else {'max_window_pixels': args.max_window_pixels}),
         soften=args.soften, mask_dilation=args.mask_dilation, feather=args.feather,
         scene_threshold=args.scene_threshold, chunk_size=args.chunk_size,
         raft_iter=args.raft_iter, neighbor_length=args.neighbor_length,

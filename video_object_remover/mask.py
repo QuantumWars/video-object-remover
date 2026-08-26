@@ -51,3 +51,21 @@ def crop_sequence(masks_full_dir: str, window: Window, nframes: int,
                           interpolation=cv2.INTER_NEAREST)
         cv2.imwrite(os.path.join(out_dir, name), crop)
     return out_dir
+
+
+def pad_sequence(masks_dir: str, window: Window, have: int, need: int) -> int:
+    """Write empty masks for frames `have`..`need`-1.
+
+    Used when extraction yields more frames than ffprobe promised. An empty mask
+    means "object absent", which the compositor already passes through
+    untouched, so the tail is left exactly as filmed rather than crashing the
+    run or inpainting against a missing file.
+    """
+    empty = np.zeros((window.proc_h, window.proc_w), np.uint8)
+    written = 0
+    for n in range(have, need):
+        path = os.path.join(masks_dir, f"f_{n + 1:06d}.png")
+        if not os.path.exists(path):
+            cv2.imwrite(path, empty)
+            written += 1
+    return written

@@ -18,9 +18,29 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 
+#: Pixel budget for the window ProPainter actually processes.
+#:
+#: Not a guess. The shipped watermark work ran at 448x320 (143k px) and was
+#: stable; 768x512 (393k px) in fp32 thrashed MPS memory and per-iteration time
+#: exploded from 7.5s to 59s. A full-resolution 1264x1080 window (1.37M px) on a
+#: 32GB M1 Max drove swap to 98% and produced zero frames in eight minutes at a
+#: 27% CPU duty cycle -- the machine was paging, not inpainting.
+#:
+#: 400k px sits just above the fp32 thrash point, which fp16 comfortably clears,
+#: and ~2.8x above the size proven in production. Raise it on a large discrete
+#: GPU via --max-window-pixels; 0 disables the cap.
+MAX_WINDOW_PIXELS = 400_000
+
+
 def _round_up(x: int, m: int = 8) -> int:
     """Round up to the nearest multiple of m (ProPainter likes /8 dimensions)."""
     return int(((x + m - 1) // m) * m)
+
+
+def _round_down(x: int, m: int = 8) -> int:
+    """Round down to a multiple of m, never below m. Used when fitting a budget:
+    rounding up can push the result back over the cap it was meant to satisfy."""
+    return max(m, int((x // m) * m))
 
 
 @dataclass(frozen=True)
@@ -67,6 +87,25 @@ def _finish_window(x: int, y: int, x2: int, y2: int,
     proc_w = _round_up(max(8, int(round(w * proc_scale))))
     proc_h = _round_up(max(8, int(round(h * proc_scale))))
     return Window(x=x, y=y, w=w, h=h, proc_w=proc_w, proc_h=proc_h)
+
+
+def fit_pixel_budget(window: Window, max_pixels: int) -> tuple[Window, bool]:
+    """Shrink the *processing* resolution until it fits `max_pixels`.
+
+    The native crop is untouched -- only what ProPainter is handed shrinks, and
+    the composite upscales it back. Returns (window, was_capped). A max_pixels
+    of 0 or less disables the cap.
+    """
+    if max_pixels <= 0:
+        return window, False
+    pixels = window.proc_w * window.proc_h
+    if pixels <= max_pixels:
+        return window, False
+    shrink = (max_pixels / pixels) ** 0.5
+    proc_w = _round_down(int(window.proc_w * shrink))
+    proc_h = _round_down(int(window.proc_h * shrink))
+    return Window(x=window.x, y=window.y, w=window.w, h=window.h,
+                  proc_w=proc_w, proc_h=proc_h), True
 
 
 def compute_window(box: Box, frame_w: int, frame_h: int,
@@ -124,6 +163,7 @@ class PipelineConfig:
     workdir: str = "work"
     pad: int = 160                     # spatial context around the target
     proc_scale: float = 1.0            # downscale factor for processing (use <1 at 4K)
+    max_window_pixels: int = MAX_WINDOW_PIXELS   # safety cap; 0 disables
     soften: float = 2.5                # gaussian sigma applied to the synthesized patch
     mask_dilation: int = 8             # ProPainter mask dilation
     feather: int = 4                   # gaussian sigma for the composite alpha edge

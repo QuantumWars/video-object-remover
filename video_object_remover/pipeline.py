@@ -8,8 +8,8 @@ from __future__ import annotations
 import os
 import shutil
 
-from . import composite, frames, inpaint, mask, reveal, scenes
-from .config import PipelineConfig, compute_window, union_window
+from . import composite, frames, inpaint, mask, preflight, reveal, scenes
+from .config import PipelineConfig, compute_window, fit_pixel_budget, union_window
 from .probe import probe
 from .timing import Timer
 
@@ -55,13 +55,34 @@ def run_pipeline(cfg: PipelineConfig) -> dict:
         mask_arg = mask_path
         masks_win = None
 
+    window, capped = fit_pixel_budget(window, cfg.max_window_pixels)
+    if capped:
+        # The failure this prevents: a full-resolution 1264x1080 window drove a
+        # 32GB machine to 98% swap and produced zero frames in eight minutes.
+        print(f"[limit] window exceeds the {cfg.max_window_pixels:,}px budget — "
+              f"processing at {window.proc_w}x{window.proc_h} instead "
+              f"(raise with --max-window-pixels, 0 disables)")
+
     print(f"[info] window native {window.w}x{window.h}@({window.x},{window.y}) "
           f"-> processing {window.proc_w}x{window.proc_h}")
+
+    report = preflight.run(cfg, info, window)
+    for w in report.warnings:
+        print(f"[warn] {w}")
 
     # --- extract window frames, plan chunks, inpaint, composite ---
     with timer.stage("extract"):
         nframes = frames.extract_window(cfg.input, window, frames_dir)
     print(f"[extract] {nframes} window frames")
+
+    if nframes != info.nframes:
+        # ffprobe's nb_frames is a container hint and is wrong often enough to
+        # matter. Extraction is ground truth; without this the mask sequence is
+        # short and the run dies deep inside the inpaint stage instead.
+        print(f"[warn] ffprobe reported {info.nframes} frames, extraction produced "
+              f"{nframes} — trusting extraction")
+        if masks_win is not None and nframes > info.nframes:
+            mask.pad_sequence(masks_win, window, info.nframes, nframes)
 
     with timer.stage("scenes"):
         cuts = scenes.detect_cuts(cfg.input, cfg.scene_threshold, info.fps)

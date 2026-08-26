@@ -119,6 +119,24 @@ def create_app() -> FastAPI:
         return Response(buf.tobytes(), media_type="image/jpeg",
                         headers={"Cache-Control": "no-store"})
 
+    def _default_output(path: str, uploaded: bool) -> str:
+        """Where the result should land.
+
+        A dragged-in file is copied to a temp dir, and defaulting the output
+        beside it buries the result somewhere the user will never look and macOS
+        eventually purges. Send uploads to ~/Movies instead; a file opened by
+        path stays next to its source, which is what you want when scripting.
+        """
+        stem, _ = os.path.splitext(path)
+        if not uploaded:
+            return f"{stem}.removed.mp4"
+        name = os.path.basename(stem) + ".removed.mp4"
+        for folder in ("Movies", "Desktop"):
+            dest = os.path.join(os.path.expanduser("~"), folder)
+            if os.path.isdir(dest) and os.access(dest, os.W_OK):
+                return os.path.join(dest, name)
+        return os.path.join(os.path.expanduser("~"), name)
+
     def _open(path: str, tmpdir: Optional[str] = None) -> dict:
         if not os.path.isfile(path):
             raise HTTPException(400, f"no such file: {path}")
@@ -128,11 +146,10 @@ def create_app() -> FastAPI:
             raise HTTPException(400, f"not a readable video: {exc}")
         sid = uuid.uuid4().hex[:12]
         sessions[sid] = Session(id=sid, path=path, info=info, tmpdir=tmpdir)
-        stem, _ = os.path.splitext(path)
         return {"id": sid, "path": path, "width": info.width, "height": info.height,
                 "fps": round(info.fps, 3), "nframes": info.nframes,
                 "duration": round(info.duration, 2), "has_audio": info.has_audio,
-                "suggested_output": f"{stem}.removed.mp4"}
+                "suggested_output": _default_output(path, tmpdir is not None)}
 
     # ---------------------------------------------------------------- routes
 
@@ -200,8 +217,8 @@ def create_app() -> FastAPI:
         if not ckpt:
             raise HTTPException(400, "no SAM 2 checkpoint found — run ./setup_sam.sh")
 
-        stem, _ = os.path.splitext(s.path)
-        output = os.path.abspath(os.path.expanduser(req.output or f"{stem}.removed.mp4"))
+        output = os.path.abspath(os.path.expanduser(
+            req.output or _default_output(s.path, s.tmpdir is not None)))
         os.makedirs(os.path.dirname(output) or ".", exist_ok=True)
 
         cmd = cli_command() + [
