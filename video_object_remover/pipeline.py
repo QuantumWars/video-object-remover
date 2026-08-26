@@ -8,7 +8,7 @@ from __future__ import annotations
 import os
 import shutil
 
-from . import composite, frames, inpaint, mask, scenes
+from . import composite, frames, inpaint, mask, reveal, scenes
 from .config import PipelineConfig, compute_window, union_window
 from .probe import probe
 from .timing import Timer
@@ -29,6 +29,11 @@ def run_pipeline(cfg: PipelineConfig) -> dict:
         from . import sam_mask
         with timer.stage("sam"):
             masks_full, bboxes = sam_mask.generate(cfg, info, work)
+        if cfg.reveal_check:
+            # Cheap, and it is the one number that predicts whether ProPainter
+            # can reconstruct this shot or will only smear it.
+            print(reveal.format_report(reveal.analyse(masks_full, info.nframes)),
+                  flush=True)
         window = union_window(bboxes, info.width, info.height,
                               cfg.pad, cfg.proc_scale, cfg.roam_fraction)
         if window is None:

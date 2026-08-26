@@ -116,6 +116,7 @@ class PipelineConfig:
     sam_box: Optional[Box] = None      # alternative box prompt
     sam_max_side: int = 1024           # longest side SAM runs at
     roam_fraction: float = 0.75        # union-window -> full-frame fallback threshold
+    reveal_check: bool = True          # report background-revelation before inpainting
     use_cache: bool = True             # cache SAM masks by prompt+video across runs
     cache_dir: Optional[str] = None    # override the cache root (default ~/.cache/...)
 
