@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Video Object Remover</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>Video Object Remover</h1>
+  <div id="env" class="env"><span class="dot"></span><span id="env-text">checking…</span></div>
+</header>
+
+<main>
+  <!-- 1 ─────────────────────────────────────────── open -->
+  <section id="step-open" class="card">
+    <h2><span class="num">1</span>Open a video</h2>
+    <div class="row">
+      <input id="path" type="text" placeholder="/path/to/clip.mp4" spellcheck="false">
+      <button id="open-btn" class="primary">Open</button>
+    </div>
+    <div class="or">or</div>
+    <label id="drop" class="drop">
+      <input id="file" type="file" accept="video/*" hidden>
+      <strong>Choose a file</strong><span>or drag one here</span>
+    </label>
+    <p id="open-err" class="err"></p>
+  </section>
+
+  <!-- 2 ─────────────────────────────────────────── select -->
+  <section id="step-select" class="card hidden">
+    <h2><span class="num">2</span>Select the object</h2>
+    <p class="help">
+      <b class="in">Left click</b> a point on the object to include it.
+      <b class="out">Right click</b> a point to carve away anything over-selected.
+      Three or four clicks usually nails it.
+    </p>
+
+    <div id="stage" class="stage">
+      <img id="view" alt="frame" draggable="false">
+      <div id="busy" class="busy hidden"></div>
+    </div>
+
+    <div class="row scrub">
+      <label for="frame">Frame</label>
+      <input id="frame" type="range" min="0" max="0" value="0">
+      <output id="frame-n">0</output>
+      <span id="meta" class="meta"></span>
+    </div>
+
+    <div class="row">
+      <button id="undo">Undo point</button>
+      <button id="clear">Clear</button>
+      <span id="pts" class="meta"></span>
+      <span class="spacer"></span>
+      <button id="settings-btn">Settings</button>
+      <button id="run" class="primary" disabled>Remove object</button>
+    </div>
+
+    <div id="settings" class="settings hidden">
+      <label>Output file<input id="out" type="text" spellcheck="false"></label>
+      <div class="grid">
+        <label>Processing scale
+          <select id="proc-scale">
+            <option value="1.0">1.0 — full (1080p)</option>
+            <option value="0.5">0.5 — half (4K)</option>
+            <option value="0.75">0.75</option>
+          </select></label>
+        <label>Soften <input id="soften" type="number" step="0.1" min="0" value="2.5"></label>
+        <label>Flow iterations
+          <select id="raft">
+            <option value="20">20 — default</option>
+            <option value="12">12 — ~23% faster</option>
+          </select></label>
+        <label>CRF <input id="crf" type="number" min="0" max="51" value="16"></label>
+        <label>Context padding <input id="pad" type="number" min="0" value="160"></label>
+        <label>x264 preset
+          <select id="preset">
+            <option>slow</option><option>medium</option><option>veryfast</option>
+          </select></label>
+      </div>
+    </div>
+  </section>
+
+  <!-- 3 ─────────────────────────────────────────── run -->
+  <section id="step-run" class="card hidden">
+    <h2><span class="num">3</span>Removing</h2>
+    <div class="bar"><div id="bar-fill"></div></div>
+    <div class="row">
+      <span id="stage-txt" class="meta">starting…</span>
+      <span class="spacer"></span>
+      <span id="elapsed" class="meta"></span>
+      <button id="cancel">Cancel</button>
+    </div>
+    <div id="reveal" class="notice hidden"></div>
+    <details id="log-wrap"><summary>Log</summary><pre id="log"></pre></details>
+    <div id="result" class="hidden">
+      <video id="result-video" controls></video>
+      <div class="row">
+        <a id="download" class="primary button" download>Download</a>
+        <button id="again">Remove another</button>
+        <span id="out-path" class="meta"></span>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script src="app.js"></script>
+</body>
+</html>
