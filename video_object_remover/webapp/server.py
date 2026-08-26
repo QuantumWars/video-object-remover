@@ -7,6 +7,7 @@ single ambiguous prompt. SAM 2's image encoder runs once per frame and is kept
 warm, so every click after the first is a decoder pass and feels instant.
 """
 from __future__ import annotations
+import logging
 import os
 import shutil
 import tempfile
@@ -26,6 +27,7 @@ from ..probe import probe, VideoInfo
 from .jobs import JobManager, cli_command
 
 _STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+_log = logging.getLogger("video_object_remover")
 
 
 @dataclass
@@ -52,12 +54,24 @@ class Session:
         return self._frames[n]
 
     def predictor(self, n: int, checkpoint: str, cfg: str):
-        """A SAM 2 image predictor warm on frame `n`."""
+        """A SAM 2 image predictor warm on frame `n`.
+
+        Building it is retried once: the first construction in a process loads
+        ~300MB of weights and initialises the accelerator, and a transient
+        failure there should not reach the user as a dead click.
+        """
         key = (n, checkpoint)
         if key not in self._previews:
             from ..sam_mask import InteractivePreview
             self._previews.clear()               # one warm frame at a time
-            self._previews[key] = InteractivePreview(checkpoint, cfg, self.frame(n))
+            frame = self.frame(n)
+            try:
+                self._previews[key] = InteractivePreview(checkpoint, cfg, frame)
+            except FileNotFoundError:
+                raise                            # a bad path will not fix itself
+            except Exception as exc:
+                _log.warning("SAM 2 load failed (%s) — retrying once", exc)
+                self._previews[key] = InteractivePreview(checkpoint, cfg, frame)
         return self._previews[key]
 
 
@@ -157,8 +171,15 @@ def create_app() -> FastAPI:
         frame = s.frame(req.frame)
         mask = None
         if any(p.label == 1 for p in req.points):
-            mask = s.predictor(req.frame, ckpt,
-                               discover.sam_config_for(ckpt)).mask(pts)
+            try:
+                mask = s.predictor(req.frame, ckpt,
+                                   discover.sam_config_for(ckpt)).mask(pts)
+            except HTTPException:
+                raise
+            except Exception as exc:
+                # A bare 500 is undiagnosable from the app's own window.
+                _log.exception("preview failed")
+                raise HTTPException(500, f"{type(exc).__name__}: {exc}")
         img = overlay(frame, mask, pts)
         coverage = float((mask > 0).mean()) if mask is not None else 0.0
         return Response(

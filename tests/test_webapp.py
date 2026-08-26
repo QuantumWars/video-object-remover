@@ -110,3 +110,25 @@ def test_free_port_returns_preferred_when_available():
     port = free_port("127.0.0.1", 8765)
     with socket.socket() as s:
         s.bind(("127.0.0.1", port))
+
+
+def test_missing_checkpoint_raises_instead_of_random_weights(tmp_path):
+    """build_sam2(cfg, None) returns a model with RANDOM weights rather than
+    raising -- observed producing 0.2523 then 0.4136 coverage for the identical
+    prompt. Guard it, or the tool silently emits garbage masks."""
+    import numpy as np
+    from video_object_remover.sam_mask import _require_checkpoint
+
+    for bad in (None, "", str(tmp_path / "absent.pt")):
+        with pytest.raises(FileNotFoundError, match="checkpoint not found"):
+            _require_checkpoint(bad)
+
+    real = tmp_path / "sam2.1_hiera_tiny.pt"
+    real.write_bytes(b"x")
+    _require_checkpoint(str(real))            # exists -> no raise
+
+
+def test_preview_without_a_checkpoint_is_a_clean_400(client, monkeypatch):
+    monkeypatch.setenv("VOR_SAM_CHECKPOINT", "/nope/missing.pt")
+    r = client.post("/api/session/nope/preview", json={"frame": 0, "points": []})
+    assert r.status_code == 404          # unknown session is checked first

@@ -29,6 +29,20 @@ from .config import Box, PipelineConfig
 from .probe import VideoInfo
 
 
+def _require_checkpoint(checkpoint: Optional[str]) -> None:
+    """Fail loudly on a missing checkpoint.
+
+    ``build_sam2`` accepts ``ckpt_path=None`` and happily returns a model with
+    **random weights** — it produces plausible-looking masks that differ run to
+    run instead of raising. Silent garbage is the worst failure mode here, so
+    check before handing the path over.
+    """
+    if not checkpoint or not os.path.isfile(checkpoint):
+        raise FileNotFoundError(
+            f"SAM 2 checkpoint not found: {checkpoint!r}. Run ./setup_sam.sh, or "
+            f"set VOR_SAM_CHECKPOINT / pass --sam-checkpoint.")
+
+
 def _default_cache_root() -> str:
     return os.path.join(os.path.expanduser("~"), ".cache", "video-object-remover", "sam")
 
@@ -99,6 +113,7 @@ def generate(cfg: PipelineConfig, info: VideoInfo, work: str):
 
     from sam2.build_sam import build_sam2_video_predictor
 
+    _require_checkpoint(cfg.sam_checkpoint)
     os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
     sam_frames = os.path.join(work, "sam_frames")
     scale, _ = _extract_jpegs(cfg.input, sam_frames, cfg.sam_max_side,
@@ -173,6 +188,7 @@ def preview(cfg: PipelineConfig, info: VideoInfo, out_path: str) -> None:
     from sam2.build_sam import build_sam2
     from sam2.sam2_image_predictor import SAM2ImagePredictor
 
+    _require_checkpoint(cfg.sam_checkpoint)
     os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
     tmp = out_path + ".frame.png"
     subprocess.run(["ffmpeg", "-y", "-loglevel", "error",
@@ -213,6 +229,8 @@ class InteractivePreview:
     def __init__(self, checkpoint: str, model_cfg: str, frame_bgr: np.ndarray):
         from sam2.build_sam import build_sam2
         from sam2.sam2_image_predictor import SAM2ImagePredictor
+
+        _require_checkpoint(checkpoint)
 
         os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
         self._predictor = SAM2ImagePredictor(
