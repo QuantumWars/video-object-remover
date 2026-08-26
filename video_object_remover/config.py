@@ -26,10 +26,19 @@ from typing import Optional
 #: 32GB M1 Max drove swap to 98% and produced zero frames in eight minutes at a
 #: 27% CPU duty cycle -- the machine was paging, not inpainting.
 #:
-#: 400k px sits just above the fp32 thrash point, which fp16 comfortably clears,
-#: and ~2.8x above the size proven in production. Raise it on a large discrete
-#: GPU via --max-window-pixels; 0 disables the cap.
-MAX_WINDOW_PIXELS = 400_000
+#: The cost is *quadratic*, not linear, which a first attempt at 400k px missed:
+#: RAFT builds a correlation volume over (H/8 x W/8) cells, so its size grows as
+#: the square of the window area. Against the proven 448x320 window --
+#:
+#:     448x320   ( 143k px)   5.0M cells    1.0x   shipped, stable
+#:     680x584   ( 397k px)  38.5M cells    7.7x   still thrashed, 22% duty cycle
+#:     1264x1080 (1.37M px) 455.0M cells   90.7x   zero frames in 8 minutes
+#:
+#: -- so 400k px was 7.7x the proven correlation cost and still unusable. The
+#: default is therefore the configuration that actually shipped four
+#: deliverables on this hardware. Raise it on a large discrete GPU via
+#: --max-window-pixels; 0 disables the cap.
+MAX_WINDOW_PIXELS = 143_360
 
 
 def _round_up(x: int, m: int = 8) -> int:

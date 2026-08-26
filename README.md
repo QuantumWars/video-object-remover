@@ -146,8 +146,8 @@ Every run prints a `[timing]` breakdown. The levers:
   the re-track entirely (55s → 0s on a 90-frame test). `--no-cache` / `--cache-dir`.
 - **`--proc-scale`** — process the window at reduced resolution; the biggest
   lever at 4K. You rarely need to set it by hand: the processing window is
-  capped at **400,000 px** automatically, because a 1264x1080 window drove a
-  32GB machine to 98% swap and wrote zero frames in eight minutes. The cap
+  capped at **143,360 px** (448x320) automatically, because a 1264x1080 window
+  drove a 32GB machine to 98% swap and wrote zero frames in eight minutes. The cap
   prints when it applies; `--max-window-pixels` raises it, `0` disables it.
   Full detail: [docs/METHOD.md](docs/METHOD.md#failsafes).
 - **ProPainter knobs** — `--raft-iter 12` (vs 20) is ~23% faster and visually

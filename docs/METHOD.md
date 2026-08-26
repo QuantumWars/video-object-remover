@@ -88,20 +88,35 @@ The one that matters most. ProPainter's cost and memory scale with
 degradation — you go from working to paging, and paging looks like "still
 running".
 
-| window | outcome |
-|---|---|
-| 448x320 (143k px) | shipped four deliverables, stable, ~1.3 s/it |
-| 768x512 (393k px, fp32) | thrashed MPS; 7.5 s/it became 59 s/it |
-| 1264x1080 (1.37M px) | 98% swap on a 32GB M1 Max, **zero frames in 8 min**, 27% CPU duty cycle |
+The cost is **quadratic**, not linear: RAFT builds a correlation volume over
+(H/8 x W/8) cells, so it grows as the *square* of the window area. Measured on a
+32GB M1 Max:
 
-So the processing window is capped at **400,000 px** by default — just above the
-fp32 thrash point, which fp16 clears, and ~2.8x the size proven in production.
+| window | corr. volume | vs proven | outcome |
+|---|---|---|---|
+| 448x320 (143k px) | 5.0M | 1.0x | shipped four deliverables, ~1.3 s/it |
+| 680x584 (397k px) | 38.5M | 7.7x | still thrashed — 22% CPU duty cycle, no progress bar in 6 min |
+| 1264x1080 (1.37M px) | 455.0M | 90.7x | 98% swap, **zero frames in 8 minutes** |
+
+A first attempt at a 400k px cap failed for exactly this reason — it modelled a
+quadratic cost as linear, and 400k px is still 7.7x the proven correlation
+volume. The default is therefore **143,360 px (448x320)**: the configuration
+that actually shipped, on this hardware.
 The native crop is untouched; only what ProPainter is handed shrinks, and the
 composite upscales it back. `--max-window-pixels` raises it for a large discrete
 GPU; `0` disables it.
 
 This is why `--proc-scale 1.0` is safe as a default: the budget catches the case
 where full resolution would be catastrophic, and says so.
+
+**The cost is sharpness.** A 1912x1080 clip whose subject fills the frame needs a
+~1264x1080 window, which the budget downscales 0.32x; the fill is then upscaled
+back and reads soft at 1:1, though fine at normal playback scale. That is not a
+tuning problem — the alternative is a run that never finishes. On a large
+discrete GPU, raise `--max-window-pixels`. Note that splitting the clip into
+temporal segments does **not** help when the subject is large rather than roaming:
+measured on such a clip, the per-frame bbox was 925x1044 against a 1097x1053
+union, so every segment needs essentially the same window.
 
 ### Checked before any work starts
 
