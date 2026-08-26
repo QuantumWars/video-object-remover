@@ -73,6 +73,10 @@ def run(cfg: PipelineConfig, info: VideoInfo, window: Window,
         return a[..., None]
 
     cap = cv2.VideoCapture(cfg.input)
+    if not cap.isOpened():
+        raise RuntimeError(
+            f"could not open {cfg.input} for compositing — the file may have "
+            f"moved or be unreadable.")
     ff = _open_encoder(cfg, info)
     n = written = skipped = 0
     while True:
@@ -106,7 +110,14 @@ def run(cfg: PipelineConfig, info: VideoInfo, window: Window,
 
     cap.release()
     ff.stdin.close()
-    ff.wait()
+    rc = ff.wait()
+    if rc != 0:
+        raise RuntimeError(
+            f"ffmpeg failed to encode {cfg.output} (exit {rc}). "
+            f"The output is incomplete.")
+    if written == 0:
+        raise RuntimeError(
+            f"no frames were composited from {cfg.input} — nothing was written.")
     return written, skipped
 
 

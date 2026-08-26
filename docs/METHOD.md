@@ -74,3 +74,65 @@ motion. Flat/dark/defocused backgrounds come out perfect; busy, sharp,
 permanently-occluded regions are plausibly synthesized and can show softness on a
 paused frame that is invisible in motion. Judge on playback, not on a frozen 4×
 zoom.
+
+## Failsafes
+
+Every check below exists because of a way a run actually went wrong, or would
+have failed late and unreadably. The principle throughout: fail early with a
+message you can act on, and never produce something plausible-looking and wrong.
+
+### The window pixel budget
+
+The one that matters most. ProPainter's cost and memory scale with
+`window pixels x frames`, and on unified memory there is no graceful
+degradation — you go from working to paging, and paging looks like "still
+running".
+
+| window | outcome |
+|---|---|
+| 448x320 (143k px) | shipped four deliverables, stable, ~1.3 s/it |
+| 768x512 (393k px, fp32) | thrashed MPS; 7.5 s/it became 59 s/it |
+| 1264x1080 (1.37M px) | 98% swap on a 32GB M1 Max, **zero frames in 8 min**, 27% CPU duty cycle |
+
+So the processing window is capped at **400,000 px** by default — just above the
+fp32 thrash point, which fp16 clears, and ~2.8x the size proven in production.
+The native crop is untouched; only what ProPainter is handed shrinks, and the
+composite upscales it back. `--max-window-pixels` raises it for a large discrete
+GPU; `0` disables it.
+
+This is why `--proc-scale 1.0` is safe as a default: the budget catches the case
+where full resolution would be catastrophic, and says so.
+
+### Checked before any work starts
+
+- **ffmpeg / ffprobe on PATH** — otherwise a missing binary surfaces as a
+  `FileNotFoundError` from inside a helper, three stages in.
+- **A readable source with frames** — a zero-frame or malformed file is rejected
+  rather than producing an empty render.
+- **A writable output path** — a destination that is a directory, or in a
+  read-only folder, fails now rather than after an hour of inpainting.
+- **Disk space** — the scratch requirement is estimated from the window and
+  frame count. Not enough is an error; barely enough is a warning.
+
+### Checked during the run
+
+- **Frame-count disagreement.** `ffprobe`'s `nb_frames` is a container hint and
+  is wrong often enough to matter. Extraction is ground truth: if they disagree,
+  extraction wins and the mask sequence is padded with empty masks (which the
+  compositor already passes through untouched) instead of dying mid-inpaint.
+- **Chunk output count.** Each ProPainter chunk must return exactly the frames it
+  was given.
+- **A missing SAM checkpoint.** `build_sam2` accepts `ckpt_path=None` and returns
+  a model with **random weights** rather than raising — observed producing 0.2523
+  then 0.4136 coverage for an identical prompt. Guarded on every entry point.
+
+### Checked at the end
+
+- **The compositor opened the source.** `VideoCapture` on an unreadable file
+  loops zero times; without a guard that wrote an empty video and reported the
+  frame count as success.
+- **ffmpeg's exit code.** Previously unchecked, so an encode failure returned a
+  frame count as though it had worked.
+
+None of these replace looking at the output. They only ensure that when
+something is wrong, you are told.

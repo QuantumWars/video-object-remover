@@ -90,3 +90,24 @@ def test_impossible_disk_requirement_raises(tmp_path):
 
 def test_tools_present_in_this_environment():
     preflight.check_tools()          # ffmpeg/ffprobe are required to run at all
+
+
+# --- compositor guards: paths that used to report success on failure ------
+
+def test_composite_rejects_an_unopenable_source(tmp_path):
+    """VideoCapture on a non-video loops zero times; without a guard the run
+    wrote an empty file and reported the frame count as success."""
+    import cv2
+    from video_object_remover import composite
+    from video_object_remover.config import Box
+
+    bogus = tmp_path / "not_a_video.mp4"
+    bogus.write_bytes(b"definitely not mp4")
+    cfg = PipelineConfig(input=str(bogus), output=str(tmp_path / "o.mp4"),
+                         propainter="", box=Box(0, 0, 10, 10))
+    win = Window(x=0, y=0, w=64, h=64, proc_w=64, proc_h=64)
+    alpha = tmp_path / "a.png"
+    import numpy as np
+    cv2.imwrite(str(alpha), np.zeros((64, 64), np.uint8))
+    with pytest.raises(RuntimeError, match="could not open"):
+        composite.run(cfg, _info(), win, {}, alpha_path=str(alpha))
