@@ -169,6 +169,27 @@ Full rotoscoping guide: **[docs/SAM.md](docs/SAM.md)**. Pipeline rationale:
 
 ---
 
+## DaVinci Resolve
+
+Install the Utility script from the app, then in Resolve put the playhead over a
+clip and run **Workspace → Scripts → Utility → Video Object Remover**.
+
+Two ways to send the clip:
+
+| | |
+|---|---|
+| **Original media** | Processes the source file. Instant, full quality, ignores grades. |
+| **Timeline render** | Renders the clip's span to ProRes 422 HQ first, so grades and transforms are baked in. Isolated on a throwaway duplicate timeline, so nothing above the clip composites into it and your own timeline is never modified. |
+
+Results come back on a new track at the same timecode, into the media pool, or
+wired into the clip's Fusion comp.
+
+> Measured on Resolve 21.0.4.5 (Free): a comp built by a script **does** render,
+> and a matte bound through `SetInput("MediaID", …)` renders with it. What an
+> `EffectMask` on a `MediaIn` does *not* do is cut the picture — it restricts the
+> effect a node applies, and a MediaIn applies none. For a cut-out, use the
+> ProRes 4444 output, which carries a real alpha channel and needs no comp.
+
 ## Know before you render: the background-revelation check
 
 ProPainter propagates pixels that **exist** somewhere in the clip. If the object

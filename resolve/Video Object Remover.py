@@ -25,6 +25,7 @@ actually interacts with happens in the app, which is better at it.
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -36,6 +37,11 @@ DONE = os.path.join(HANDOFF, "done.json")
 
 APP = "/Applications/Video Object Remover.app"
 MATTE_NODE = "VOR_Matte"
+RENDER_DIR = os.path.join(HANDOFF, "render")
+#: ProRes 422 HQ: visually lossless for this, and available on Resolve Free.
+RENDER_FORMAT, RENDER_CODEC = "mov", "ProRes422HQ"
+#: throwaway timeline used to isolate the clip while rendering
+SCRATCH_TIMELINE = "VOR scratch (safe to delete)"
 POLL_SECONDS = 1.0
 TIMEOUT_SECONDS = 4 * 60 * 60          # a 4K removal is genuinely hours
 
@@ -264,6 +270,100 @@ def ensure_track_above(timeline, track_index):
 
 
 # --------------------------------------------------------------------------
+# Rendering the timeline span
+
+def render_span(project, timeline, session, on_status=None):
+    """Render just this clip's span, as the timeline sees it.
+
+    Rendering rather than reading the source file is the point of this mode:
+    grades, resizes and effects are baked in, so a matte lines up with the
+    picture the editor is actually looking at.
+
+    Anything on a higher track would composite over the clip, so it has to go.
+    `SetTrackEnable` looks like the way to do that and is not — measured on
+    21.0.4.5 it returns True and leaves the track enabled, and the render came
+    back with the upper clip still in it. So the work happens on a *duplicate*
+    timeline, where clips above the target can simply be deleted. The user's
+    own timeline is never modified; the copy is thrown away either way.
+    """
+    say = on_status or (lambda _t: None)
+    if os.path.isdir(RENDER_DIR):
+        shutil.rmtree(RENDER_DIR, ignore_errors=True)
+    os.makedirs(RENDER_DIR, exist_ok=True)
+
+    keep = int(session.get("track_index", 1))
+    media_pool = project.GetMediaPool()
+    scratch = None
+    job_id = None
+    try:
+        say("Preparing a copy of the timeline…")
+        scratch = timeline.DuplicateTimeline(SCRATCH_TIMELINE)
+        if scratch is None:
+            return None, ("Resolve would not duplicate the timeline, which is "
+                          "how this mode isolates the clip. Use 'Original "
+                          "media' instead.")
+        project.SetCurrentTimeline(scratch)
+
+        for track in range(int(scratch.GetTrackCount("video")), keep, -1):
+            items = scratch.GetItemListInTrack("video", track) or []
+            if items:
+                scratch.DeleteClips(items)
+
+        if not project.SetCurrentRenderFormatAndCodec(RENDER_FORMAT, RENDER_CODEC):
+            return None, "Resolve would not select a ProRes render preset"
+
+        ok = project.SetRenderSettings({
+            "SelectAllFrames": False,
+            "MarkIn": int(session["record_frame"]),
+            # Inclusive here, unlike AppendToTimeline's endFrame.
+            "MarkOut": int(session["record_end"]) - 1,
+            "TargetDir": RENDER_DIR,
+            "CustomName": "vor_span",
+            "UniqueFilenameStyle": 0,
+            "ExportVideo": True,
+            "ExportAudio": False,
+        })
+        if not ok:
+            return None, "Resolve rejected the render settings"
+
+        job_id = project.AddRenderJob()
+        if not job_id:
+            return None, "Resolve would not queue the render"
+        project.StartRendering(job_id)
+        while project.IsRenderingInProgress():
+            status = project.GetRenderJobStatus(job_id) or {}
+            say(f"Rendering the timeline span… "
+                f"{status.get('CompletionPercentage', 0)}%")
+            time.sleep(POLL_SECONDS)
+
+        status = project.GetRenderJobStatus(job_id) or {}
+        if status.get("JobStatus") != "Complete":
+            return None, f"the render did not finish ({status.get('JobStatus')})"
+
+        rendered = [os.path.join(RENDER_DIR, f)
+                    for f in sorted(os.listdir(RENDER_DIR))
+                    if f.lower().endswith(".mov")]
+        if not rendered:
+            return None, "the render reported success but produced no file"
+        return rendered[0], None
+    finally:
+        try:
+            project.SetCurrentTimeline(timeline)
+        except Exception:                                     # noqa: BLE001
+            pass
+        if scratch is not None:
+            try:
+                media_pool.DeleteTimelines([scratch])
+            except Exception:                                 # noqa: BLE001
+                pass
+        if job_id:
+            try:
+                project.DeleteRenderJob(job_id)
+            except Exception:                                 # noqa: BLE001
+                pass
+
+
+# --------------------------------------------------------------------------
 # Handoff
 
 def write_session(payload):
@@ -466,10 +566,27 @@ def main():
     session["created"] = time.time()
 
     if session["source_mode"] == "render":
-        message("Video Object Remover",
-                "Rendering the timeline span is not wired up yet — this build "
-                "sends the original media. Re-run and choose 'Original media'.")
-        return
+        win, disp, state = progress_window(session["clip_name"])
+        win.Show()
+
+        def status(text):
+            try:
+                win.GetItems()["status"].Text = text
+                disp.StepLoop(1)
+            except Exception:                                 # noqa: BLE001
+                pass
+
+        rendered, error = render_span(project, timeline, session, status)
+        win.Hide()
+        if rendered is None:
+            message("Video Object Remover", error or "The render failed.")
+            return
+        # The app now works on the rendered span, which starts at frame 0 —
+        # but the result still has to land at the clip's own timecode.
+        session["file_path"] = rendered
+        session["rendered_from"] = session.get("file_path")
+        session["source_start"] = 0
+        session["source_end"] = int(session["duration"])
 
     write_session(session)
     if not launch_app():
