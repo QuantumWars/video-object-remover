@@ -1,0 +1,41 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Video Object Remover</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: #0b0c0e; color: #e7e9ec;
+    font: 13px/1.55 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+    display: grid; place-items: center; padding: 40px;
+    -webkit-font-smoothing: antialiased;
+    -webkit-app-region: drag;
+  }
+  .card { width: min(620px, 100%); -webkit-app-region: no-drag; }
+  h1 { font-size: 17px; font-weight: 600; margin: 0 0 8px; letter-spacing: -0.01em; }
+  p { color: #9aa1aa; margin: 0 0 18px; }
+  pre {
+    background: #0f1113; border: 1px solid #23262b; border-radius: 10px;
+    padding: 12px; max-height: 320px; overflow: auto;
+    font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: #8b929b; white-space: pre-wrap; user-select: text;
+  }
+  .hint { margin-top: 16px; color: #6b727b; font-size: 12px; }
+</style>
+<div class="card">
+  <h1>The backend didn’t start</h1>
+  <p id="msg">Something went wrong launching the Python service.</p>
+  <pre id="log">No output was captured.</pre>
+  <div class="hint">Full log: <code id="path"></code></div>
+</div>
+<script>
+  // Sandboxed with contextIsolation on, so `require` does not exist here —
+  // everything arrives through the preload bridge.
+  window.vor?.appInfo?.().then((i) => {
+    document.getElementById('path').textContent = i.logPath
+  })
+  window.vor?.onBackendError?.((d) => {
+    document.getElementById('msg').textContent = d.message
+    if (d.log?.length) document.getElementById('log').textContent = d.log.join('\n')
+  })
+</script>
