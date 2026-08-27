@@ -65,6 +65,10 @@ RETURN_MODES = [
 ]
 
 
+#: the dialog binds its checkboxes by name, so these lengths are load-bearing
+assert len(SOURCE_MODES) == 2 and len(RETURN_MODES) == 3
+
+
 # --------------------------------------------------------------------------
 # Resolve handles
 
@@ -90,6 +94,42 @@ def get_fusion():
         return get_resolve().Fusion()
 
 
+def get_ui():
+    """(UIManager, UIDispatcher) from wherever this Resolve keeps them.
+
+    `bmd` is a *builtin* in Resolve's script host, not a module. `import bmd`
+    raises ModuleNotFoundError, which is exactly what stopped the first real
+    run of this script — so take the injected object rather than importing it.
+
+    `hasattr` is not enough to pick a source: `fusion.UIDispatcher` exists on
+    this build and is None, so the attribute has to be tested for callability.
+    """
+    import builtins
+    fu = get_fusion()
+    injected = globals().get("bmd") or getattr(builtins, "bmd", None)
+
+    manager = None
+    for owner in (fu, injected):
+        candidate = getattr(owner, "UIManager", None) if owner else None
+        if candidate is not None:
+            manager = candidate
+            break
+
+    make_dispatcher = None
+    for owner in (injected, fu):
+        candidate = getattr(owner, "UIDispatcher", None) if owner else None
+        if callable(candidate):
+            make_dispatcher = candidate
+            break
+
+    if manager is None or make_dispatcher is None:
+        raise RuntimeError(
+            "this Resolve build did not provide a UIManager/UIDispatcher, so "
+            "the script cannot show its dialogs. Run it from Workspace > "
+            "Scripts rather than from an external interpreter.")
+    return manager, make_dispatcher(manager)
+
+
 # --------------------------------------------------------------------------
 # Dialogs
 #
@@ -97,8 +137,7 @@ def get_fusion():
 # rather than behind it.
 
 def message(title, text):
-    fu = get_fusion()
-    ui, disp = fu.UIManager, __import__("bmd").UIDispatcher(fu.UIManager)
+    ui, disp = get_ui()
     win = disp.AddWindow(
         {"WindowTitle": title, "ID": "vorMsg",
          "Geometry": [500, 300, 460, 170]},
@@ -118,8 +157,7 @@ def message(title, text):
 
 def ask_options(clip_name):
     """Pick how the clip goes out and how the result comes back."""
-    fu = get_fusion()
-    ui, disp = fu.UIManager, __import__("bmd").UIDispatcher(fu.UIManager)
+    ui, disp = get_ui()
     chosen = {}
 
     def radio_group(prefix, options, default=0):
@@ -154,21 +192,21 @@ def ask_options(clip_name):
 
     items = win.GetItems()
 
-    # Checkboxes behave as radios: selecting one clears its siblings. Resolve's
-    # UIManager has no radio group, and two "sources" selected at once is not a
-    # state the rest of the script should have to think about.
-    def exclusive(prefix, count):
-        def handler(idx):
-            def on_click(ev):
-                for j in range(count):
-                    items[f"{prefix}{j}"].Checked = (j == idx)
-            return on_click
-        for i in range(count):
-            setattr(win.On, f"{prefix}{i}", None)
-            win.On[f"{prefix}{i}"].Clicked = handler(i)
+    # Checkboxes stand in for radio buttons: Resolve's UIManager has none, and
+    # two sources selected at once is not a state the rest of this should have
+    # to reason about. Bound one by one rather than generated, because dynamic
+    # event binding is the sort of thing that works until it silently doesn't.
+    def pick(prefix, count, index):
+        def handler(ev):
+            for j in range(count):
+                items["%s%d" % (prefix, j)].Checked = (j == index)
+        return handler
 
-    exclusive("src", len(SOURCE_MODES))
-    exclusive("ret", len(RETURN_MODES))
+    win.On.src0.Clicked = pick("src", 2, 0)
+    win.On.src1.Clicked = pick("src", 2, 1)
+    win.On.ret0.Clicked = pick("ret", 3, 0)
+    win.On.ret1.Clicked = pick("ret", 3, 1)
+    win.On.ret2.Clicked = pick("ret", 3, 2)
 
     def finish(ev):
         for i, (key, _, _) in enumerate(SOURCE_MODES):
@@ -191,8 +229,7 @@ def ask_options(clip_name):
 def progress_window(clip_name):
     """A window that stays up while the app works, so Resolve does not look
     frozen and the user has a way out."""
-    fu = get_fusion()
-    ui, disp = fu.UIManager, __import__("bmd").UIDispatcher(fu.UIManager)
+    ui, disp = get_ui()
     state = {"cancelled": False}
     win = disp.AddWindow(
         {"WindowTitle": "Video Object Remover", "ID": "vorWait",
