@@ -1,18 +1,31 @@
 # video-object-remover
 
-Remove a **moving or static object** from a video and reconstruct what was behind
-it — **[SAM 2](https://github.com/facebookresearch/sam2)** rotoscoping (track the
-object from a single click) plus **[ProPainter](https://github.com/sczhou/ProPainter)**
-flow-guided video inpainting.
+Point at an object in a video. Get back either a **matte** that tracks it, or the
+**plate with it removed** and the background reconstructed.
 
-Ships as a **local web app** (and a macOS **.dmg**) so you point at the object and
-watch it go, or as a **CLI** for scripting and batch work.
+One click drives both: **[SAM 2](https://github.com/facebookresearch/sam2)** tracks
+the object across the clip, and **[ProPainter](https://github.com/sczhou/ProPainter)**
+fills in what was behind it. Ships as a desktop app, a local web app, and a CLI.
 
 > **Built on [propainter-delogo](https://github.com/QuantumWars/propainter-delogo).**
-> That project is the focused tool for removing a **static logo/watermark** in a
-> fixed box. `video-object-remover` reuses its ProPainter + compositing pipeline
-> and adds SAM 2 rotoscoping so the mask can *track a moving object*. For pure
-> corner-watermark removal, propainter-delogo is the leaner choice.
+> That project removes a **static logo** from a fixed box. This one reuses its
+> ProPainter + compositing pipeline and adds SAM 2 tracking, so the mask can
+> follow a moving object — plus a matte export, a UI, and a desktop shell.
+
+---
+
+## Two modes, one track
+
+|  | |
+|---|---|
+| **Matte** | Track the object and deliver its matte — ProRes 4444 with a real alpha channel, a greyscale ProRes 422 matte, or a PNG sequence. |
+| **Remove** | Track the object, inpaint the region, and reconstruct the background. |
+
+The expensive half is the track, and it is **cached by prompt**, not by mode. Pull
+a matte and then remove the same object and the second run pays nothing for
+tracking. The cache key covers the video, the clicks and the SAM settings, and
+deliberately ignores every inpaint and encode knob — so tuning `--soften` or
+`--crf` never re-tracks.
 
 ---
 
@@ -21,39 +34,40 @@ watch it go, or as a **CLI** for scripting and batch work.
 This is the whole interaction, and it is the difference between a usable mask and
 a fight:
 
-| | |
+|  |  |
 |---|---|
 | 🟢 **Left click** | a point **on** the object — include it |
 | 🔴 **Right click** | a point on something **wrongly included** — carve it away |
 
 One click gives SAM 2 an ambiguous prompt and it often picks a part rather than
 the whole — a hand instead of a person. Two or three clicks resolve it. The image
-encoder runs **once per frame and stays warm**, so the first click costs ~3s and
-every click after it is **~0.07s** — fast enough to actually iterate.
+encoder runs **once per frame and stays warm**, so the first click costs ~1s and
+every click after it is **~0.04s**.
 
-<!-- coverage on a real 720x1280 clip: torso 16% -> +head 24.3%, matching the
-     24.1% the video tracker produced independently on the same frame -->
+### Then track, and scrub
+
+Tracking propagates the selection across the clip so you can **scrub and check it
+before rendering** — masks appear frame by frame *while the track runs*, because
+each one is written to the cache the moment it is produced. Finding out the track
+drifted should cost you thirty seconds, not an hour of inpainting.
 
 ---
 
 ## Install
 
-### macOS app (.dmg)
+### Desktop app
 
 ```bash
-./packaging/make_dmg.sh      # -> packaging/build/VideoObjectRemover-<version>.dmg
+npm --prefix ui install && npm --prefix ui run build     # build the interface
+npm --prefix electron install
+npm --prefix electron start
 ```
 
-Open the DMG, drag the app to Applications, then **right-click → Open** the first
-time (the build is unsigned). The first launch opens a Terminal and fetches
-PyTorch and the model weights into `~/Library/Application Support/VideoObjectRemover`
-— about 4 GB, once, 10–20 minutes. Every launch after that is instant and opens
-the browser UI by itself.
+The shell reserves a free port, starts the Python backend, waits for it to answer
+`/api/health`, and loads the UI. Quitting mid-render cancels the job rather than
+orphaning it.
 
-Needs macOS 11+, Python 3.9+, and `ffmpeg` (`brew install ffmpeg`). Details and
-the bundle layout: **[docs/APP.md](docs/APP.md)**.
-
-### From source (any platform)
+### From source
 
 ```bash
 git clone https://github.com/QuantumWars/video-object-remover.git
@@ -65,43 +79,52 @@ pip install -e ".[web]"
 ./setup_sam.sh                 # SAM 2 + checkpoint   -> third_party/sam2
 #   ./setup_sam.sh third_party/sam2 base_plus   # smaller/faster checkpoint
 
-video-object-remover web       # opens http://127.0.0.1:8765
+video-object-remover web       # http://127.0.0.1:8765
 ```
 
 `--propainter`, `--sam-checkpoint` and `--sam-config` are **discovered
-automatically**; the SAM config is inferred from the checkpoint filename, so the
-two can't be mismatched. Override with `VOR_PROPAINTER` / `VOR_SAM_CHECKPOINT`.
+automatically**; the SAM config is inferred from the checkpoint filename so the
+two cannot be mismatched.
+
+### Environment overrides
+
+| Variable | Overrides |
+|---|---|
+| `VOR_PROPAINTER` | ProPainter checkout |
+| `VOR_SAM_CHECKPOINT` | SAM 2 `.pt` checkpoint |
+| `VOR_FFMPEG` / `VOR_FFPROBE` | the binaries every stage shells out to |
+| `VOR_PYTHON` | interpreter the desktop shell spawns |
+
+Each is **authoritative**: set it to something wrong and the run fails loudly
+rather than falling back to a different binary and quietly producing something
+else.
 
 ---
 
-## Use it
-
-### Web UI
-
-`video-object-remover web` → open a video (path or drag-and-drop) → scrub to a
-frame where the object is clearly visible → **left-click it, right-click any
-over-selection** → **Remove object**. Progress, log and the finished video are
-all in the page.
-
-### CLI
+## CLI
 
 ```bash
-# preview the mask first
-video-object-remover sam-preview --input clip.mp4 \
-  --sam-frame 0 --sam-point 960 540 --out sam.png
+# track once — populates the cache, writes nothing
+video-object-remover track --input clip.mp4 --sam-frame 0 --sam-point 960 540
 
-# remove it
+# deliver the matte
+video-object-remover roto --input clip.mp4 --output cutout.mov \
+  --sam-frame 0 --sam-point 960 540 \
+  --format prores4444 --format matte --format png \
+  --matte-feather 1.5
+
+# remove the object
 video-object-remover run --input clip.mp4 --output clip.removed.mp4 \
   --mask sam --sam-frame 0 --sam-point 960 540 --sam-neg-point 400 300 \
   --proc-scale 0.5           # recommended at 4K
-```
 
-Static logo in a fixed box (inherited from propainter-delogo):
-
-```bash
+# static logo in a fixed box (inherited from propainter-delogo)
 video-object-remover run --input clip.mp4 --output out.mp4 \
   --mask box --box 64 74 248 172
 ```
+
+With one `--format` the output path is used verbatim; with several, siblings are
+derived from its stem (`cutout.4444.mov`, `cutout.matte.mov`, `cutout_frames/`).
 
 Full rotoscoping guide: **[docs/SAM.md](docs/SAM.md)**. Pipeline rationale:
 **[docs/METHOD.md](docs/METHOD.md)**.
@@ -116,13 +139,11 @@ there is nothing to propagate and the fill degenerates into a **directional
 smear**. That is an information limit of flow-guided inpainting — no `--soften`
 or `--raft-iter` value fixes it.
 
-Every `--mask sam` run now measures this from the masks *before* inpainting:
+Every removal run measures this from the masks *before* inpainting:
 
 ```
 [reveal] background revealed on 30% of the masked area (worst frame 17%),
          18.1% of the frame masked throughout -> POOR
-[reveal] Most of the background is never exposed in any frame. ProPainter will
-         smear rather than reconstruct. Consider a diffusion inpainter.
 ```
 
 | verdict | meaning |
@@ -131,9 +152,9 @@ Every `--mask sam` run now measures this from the masks *before* inpainting:
 | **MARGINAL** (≥50%) | partly exposed; expect softness where it isn't — look before delivering |
 | **POOR** (<50%) | mostly never exposed; ProPainter will smear. Use a diffusion inpainter ([VOID](https://github.com/Netflix/void-model), Wan-VACE) instead |
 
-The web UI shows the same verdict as a coloured banner. `--no-reveal-check`
-skips it. This one number is the difference between an informed render and an
-hour spent producing a smear.
+It is **not** shown in matte mode. The verdict predicts whether a *background* can
+be reconstructed, which says nothing about the quality of a matte — a clip that
+scores POOR for removal can be a perfect roto job.
 
 ---
 
@@ -141,27 +162,41 @@ hour spent producing a smear.
 
 Every run prints a `[timing]` breakdown. The levers:
 
-- **SAM mask cache** — keyed on `(video, prompt, sam params)` under
-  `~/.cache/video-object-remover/`, so re-runs that tune *inpaint* settings skip
-  the re-track entirely (55s → 0s on a 90-frame test). `--no-cache` / `--cache-dir`.
-- **`--proc-scale`** — process the window at reduced resolution; the biggest
-  lever at 4K. You rarely need to set it by hand: the processing window is
-  capped at **143,360 px** (448x320) automatically, because a 1264x1080 window
-  drove a 32GB machine to 98% swap and wrote zero frames in eight minutes. The cap
-  prints when it applies; `--max-window-pixels` raises it, `0` disables it.
-  Full detail: [docs/METHOD.md](docs/METHOD.md#failsafes).
+- **The mask cache** — keyed on `(video, prompt, SAM settings)` under
+  `~/.cache/video-object-remover/`. Re-runs that tune inpaint settings skip the
+  re-track entirely (55s → 0s on a 90-frame test). `--no-cache` / `--cache-dir`.
+- **`--proc-scale`** — process the window at reduced resolution; the biggest lever
+  at 4K. You rarely need to set it: the processing window is capped at
+  **143,360 px** automatically, because RAFT's correlation volume makes cost
+  *quadratic* in window area and a 1264×1080 window drove a 32 GB machine to 98%
+  swap and wrote zero frames in eight minutes. `--max-window-pixels` raises it,
+  `0` disables it. Detail: [docs/METHOD.md](docs/METHOD.md#failsafes).
 - **ProPainter knobs** — `--raft-iter 12` (vs 20) is ~23% faster and visually
   identical here; also `--neighbor-length`, `--ref-stride`, `--subvideo-length`.
 - **SAM 2 frame offload** — the tracker keeps frames and per-frame state on the
   CPU, so long clips don't exhaust accelerator memory.
 
-Cache + `--raft-iter 12` cut a 90-frame SAM run from **199s → 111s (1.8×)**.
+---
+
+## Layout
+
+```
+video_object_remover/     the pipeline, the CLI and the HTTP API
+  pipeline.py             orchestration for both modes
+  sam_mask.py             SAM 2 tracking and the prompt-keyed mask cache
+  matte_export.py         matte delivery (ProRes 4444 / 422 / PNG)
+  inpaint.py composite.py ProPainter and the compositor
+  ffmpeg.py               binary resolution and encoder selection
+  webapp/                 FastAPI server and job manager
+ui/                       React interface (Vite); builds into webapp/static
+electron/                 desktop shell
+```
 
 ---
 
 ## Verify your output — always look
 
-Render a frame from each shot and *look*, paused and in motion. `verify` passing
+Render a frame from each shot and *look*, paused and in motion. A passing check
 and a plausible log are necessary, not sufficient — every real bug in this
 project's history produced correct-looking numbers and a broken picture.
 
