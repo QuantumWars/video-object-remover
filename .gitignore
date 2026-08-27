@@ -58,3 +58,5 @@ ui/dist/
 electron/node_modules/
 electron/dist/
 ui/shot*.mjs
+electron/payload/
+packaging/.cache/

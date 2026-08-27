@@ -19,10 +19,23 @@ contextBridge.exposeInMainWorld('vor', {
   },
   // Buffered: main may send this before the error page finishes loading, and a
   // dropped message would leave a blank screen with no explanation.
+  onSetupProgress: (cb) => {
+    for (const p of pendingSetup) cb(p)
+    pendingSetup.length = 0
+    setupCallback = cb
+  },
+  retrySetup: () => ipcRenderer.invoke('retry-setup'),
   onBackendError: (cb) => {
     if (pendingError) { cb(pendingError); pendingError = null; return }
     errorCallback = cb
   },
+})
+
+const pendingSetup = []
+let setupCallback = null
+ipcRenderer.on('setup-progress', (_e, payload) => {
+  if (setupCallback) setupCallback(payload)
+  else pendingSetup.push(payload)      // the page may not have loaded yet
 })
 
 let pendingError = null

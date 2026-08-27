@@ -57,15 +57,30 @@ drifted should cost you thirty seconds, not an hour of inpainting.
 
 ### Desktop app
 
+Download the DMG from [releases](https://github.com/QuantumWars/video-object-remover/releases),
+drag the app to Applications, then **right-click → Open** the first time — the
+build is unsigned, so Gatekeeper will otherwise refuse it.
+
+First launch sets itself up: it unpacks a private Python interpreter, builds an
+environment and fetches PyTorch, SAM 2 and ffmpeg. That is roughly **2.5 GB and
+ten to twenty minutes**, once. Every launch after it is immediate. Nothing is
+installed system-wide; everything lives in
+`~/Library/Application Support/VideoObjectRemover`, and deleting that folder
+undoes it.
+
+To run the shell from source instead:
+
 ```bash
-npm --prefix ui install && npm --prefix ui run build     # build the interface
+npm --prefix ui install && npm --prefix ui run build
 npm --prefix electron install
 npm --prefix electron start
 ```
 
-The shell reserves a free port, starts the Python backend, waits for it to answer
-`/api/health`, and loads the UI. Quitting mid-render cancels the job rather than
-orphaning it.
+To build the DMG yourself:
+
+```bash
+./packaging/build_app.sh          # -> electron/dist/*.dmg
+```
 
 ### From source
 

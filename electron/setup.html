@@ -1,0 +1,80 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Setting up</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: #0b0c0e; color: #f2f3f5;
+    font: 13px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased; letter-spacing: -0.006em;
+    display: grid; place-items: center; padding: 40px;
+    -webkit-app-region: drag; user-select: none;
+  }
+  .card { width: min(520px, 100%); -webkit-app-region: no-drag; }
+  h1 { font-size: 20px; font-weight: 600; margin: 0 0 8px; letter-spacing: -0.022em; }
+  .lede { color: #9ba1aa; margin: 0 0 28px; }
+  .step { font-size: 14px; font-weight: 550; margin-bottom: 5px; }
+  .detail { color: #6e747d; font-size: 12px; min-height: 18px; }
+  .bar { height: 5px; background: rgba(255,255,255,.09); border-radius: 99px; overflow: hidden; margin: 16px 0 8px; }
+  .bar > i {
+    display: block; height: 100%; border-radius: 99px; background: #0a84ff;
+    width: 30%; transition: width .3s cubic-bezier(.32,.72,0,1);
+  }
+  .bar.indeterminate > i { width: 32%; animation: slide 1.5s ease-in-out infinite; }
+  @keyframes slide { 0% { margin-left: -32% } 100% { margin-left: 100% } }
+  .log {
+    margin-top: 22px; background: #0e0f12; border: 1px solid rgba(255,255,255,.075);
+    border-radius: 8px; padding: 10px; height: 132px; overflow: auto;
+    font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: #6e747d; white-space: pre-wrap; user-select: text;
+  }
+  .err { border-color: rgba(255,69,58,.3); background: rgba(255,69,58,.09); color: #ff9d96;
+         border-radius: 8px; padding: 10px 12px; margin-top: 18px; font-size: 12px; }
+  button {
+    margin-top: 16px; padding: 8px 18px; border: 0; border-radius: 8px;
+    background: #0a84ff; color: #fff; font: inherit; font-weight: 590; cursor: pointer;
+  }
+</style>
+<div class="card">
+  <h1>Setting up</h1>
+  <p class="lede">
+    This happens once. It downloads about 2.5 GB, mostly PyTorch, and usually
+    takes ten to twenty minutes on a decent connection. You can leave it running.
+  </p>
+
+  <div class="step" id="step">Starting…</div>
+  <div class="detail" id="detail"></div>
+  <div class="bar indeterminate" id="bar"><i id="fill"></i></div>
+
+  <div class="log" id="log"></div>
+  <div id="fail"></div>
+</div>
+<script>
+  const $ = (id) => document.getElementById(id)
+  const log = $('log')
+
+  window.vor?.onSetupProgress?.((p) => {
+    if (p.step) $('step').textContent = p.step
+    $('detail').textContent = p.detail || ''
+    if (typeof p.percent === 'number') {
+      $('bar').classList.remove('indeterminate')
+      $('fill').style.width = `${p.percent}%`
+    } else {
+      $('bar').classList.add('indeterminate')
+    }
+    if (p.line) {
+      log.textContent += p.line + '\n'
+      log.scrollTop = log.scrollHeight
+    }
+    if (p.error) {
+      $('bar').style.display = 'none'
+      $('step').textContent = 'Setup failed'
+      $('detail').textContent = ''
+      $('fail').innerHTML =
+        '<div class="err"></div><button id="retry">Try again</button>'
+      $('fail').querySelector('.err').textContent = p.error
+      $('retry').onclick = () => window.vor.retrySetup()
+    }
+  })
+</script>

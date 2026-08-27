@@ -14,8 +14,10 @@ const net = require('net')
 const os = require('os')
 const path = require('path')
 
+const { bootstrap, isComplete, venvPython, APP_SUPPORT: SUPPORT, BIN } = require('./bootstrap')
+
 const DEV = process.argv.includes('--dev')
-const APP_SUPPORT = path.join(os.homedir(), 'Library', 'Application Support', 'VideoObjectRemover')
+const APP_SUPPORT = SUPPORT
 const LOG_DIR = path.join(APP_SUPPORT, 'logs')
 const LOG_PATH = path.join(LOG_DIR, 'server.log')
 
@@ -28,6 +30,8 @@ let win = null
 let child = null
 let port = 0
 let quitting = false
+let setupWin = null
+const resourcesDir = () => (app.isPackaged ? process.resourcesPath : __dirname)
 const recent = []               // last N backend log lines, for the error screen
 
 const remember = (chunk) => {
@@ -54,7 +58,7 @@ function freePort() {
 function resolvePython() {
   const candidates = [
     process.env.VOR_PYTHON,
-    path.join(APP_SUPPORT, 'venv', 'bin', 'python3'),
+    venvPython(),
     path.join(APP_SUPPORT, 'venv', 'bin', 'python'),
   ].filter(Boolean)
   for (const p of candidates) {
@@ -185,6 +189,35 @@ function showError(message) {
   win.loadFile(path.join(__dirname, 'error.html')).then(() => {
     win.webContents.send('backend-error', { message, log: recent.slice(-40) })
   })
+}
+
+function createSetupWindow() {
+  setupWin = new BrowserWindow({
+    width: 640, height: 560, resizable: false, show: false,
+    titleBarStyle: 'hiddenInset', backgroundColor: '#0b0c0e',
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true, nodeIntegration: false, sandbox: true,
+    },
+  })
+  setupWin.once('ready-to-show', () => setupWin.show())
+  return setupWin.loadFile(path.join(__dirname, 'setup.html'))
+}
+
+async function runSetup() {
+  const send = (payload) => {
+    if (setupWin && !setupWin.isDestroyed()) setupWin.webContents.send('setup-progress', payload)
+  }
+  try {
+    await bootstrap(resourcesDir(), (p) => {
+      send(p)
+      if (p.step) remember(`[setup] ${p.step}${p.detail ? ' — ' + p.detail : ''}`)
+    })
+    return true
+  } catch (err) {
+    send({ error: String(err.message || err) })
+    return false
+  }
 }
 
 function createWindow() {
@@ -321,6 +354,16 @@ app.whenReady().then(async () => {
     cb({ cancel: !ok })
   })
 
+  // A fresh machine has no environment to start. Build it first, in a window
+  // that says what it is doing — the alternative is an error screen telling the
+  // user to run an installer that does not exist.
+  if (!isComplete() && !process.env.VOR_PYTHON) {
+    await createSetupWindow().catch(() => {})
+    const ok = await runSetup()
+    if (!ok) return                       // the setup window offers a retry
+    if (setupWin && !setupWin.isDestroyed()) { setupWin.destroy(); setupWin = null }
+  }
+
   try {
     port = await freePort()
     startBackend()
@@ -336,6 +379,18 @@ app.whenReady().then(async () => {
   if (!ready) {
     showError('The backend did not become ready in time.')
   }
+})
+
+ipcMain.handle('retry-setup', async () => {
+  const ok = await runSetup()
+  if (!ok) return false
+  if (setupWin && !setupWin.isDestroyed()) { setupWin.destroy(); setupWin = null }
+  port = await freePort()
+  startBackend()
+  const ready = await waitForBackend()
+  await createWindow().catch(() => {})
+  if (!ready) showError('The backend did not become ready in time.')
+  return true
 })
 
 app.on('before-quit', async (ev) => {
