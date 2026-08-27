@@ -150,8 +150,11 @@ def union_window(bboxes: list[Optional[tuple[int, int, int, int]]],
 class PipelineConfig:
     input: str
     output: str
-    propainter: str                    # path to a ProPainter checkout
+    # Path to a ProPainter checkout. Only the removal path needs it — a roto run
+    # produces a matte from the SAM track alone and never loads an inpainter.
+    propainter: str = ""
     mask_source: str = "box"           # "box" | "sam"
+    mode: str = "remove"               # "remove" (inpaint) | "roto" (export a matte)
 
     # --- static box mask ---
     box: Optional[Box] = None
@@ -167,6 +170,12 @@ class PipelineConfig:
     reveal_check: bool = True          # report background-revelation before inpainting
     use_cache: bool = True             # cache SAM masks by prompt+video across runs
     cache_dir: Optional[str] = None    # override the cache root (default ~/.cache/...)
+
+    # --- rotoscoping output (mode="roto") ---
+    roto_formats: list = field(default_factory=lambda: ["prores4444"])
+    matte_feather: float = 0.0         # gaussian sigma on the matte edge; 0 = hard
+    matte_dilate: int = 0              # grow (>0) or shrink (<0) the matte, in px
+    matte_invert: bool = False         # matte the background instead of the object
 
     # --- shared ---
     workdir: str = "work"
