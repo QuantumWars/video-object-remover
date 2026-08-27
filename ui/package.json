@@ -1,7 +1,7 @@
 {
   "name": "video-object-remover-ui",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "description": "Desktop UI for video-object-remover: SAM 2 rotoscoping and ProPainter object removal.",
   "scripts": {
