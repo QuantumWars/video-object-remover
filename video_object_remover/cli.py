@@ -4,6 +4,10 @@
   preview       draw a static box on a frame (box mask source)
   sam-preview   render the SAM mask on the prompt frame (sam mask source)
   run           run the full removal (box or sam)
+  roto          track an object and export a matte — no inpainting
+
+``run`` and ``roto`` share the SAM track, and the track is cached by prompt
+rather than by command, so doing both on one clip only pays for it once.
 
 ``--propainter``, ``--sam-checkpoint`` and ``--sam-config`` are optional: when
 omitted they are discovered (see :mod:`video_object_remover.discover`), and the
@@ -11,10 +15,12 @@ config is inferred from the checkpoint filename so the two cannot be mismatched.
 """
 from __future__ import annotations
 import argparse
+import os
 
 from . import discover
 from .config import Box, PipelineConfig
 from .composite import preview as preview_box
+from .matte_export import FORMATS as ROTO_FORMATS
 from .pipeline import run_pipeline
 
 
@@ -37,6 +43,17 @@ def _sam_points(args) -> list:
     pts = [(x, y, 1) for x, y in (args.sam_point or [])]
     pts += [(x, y, 0) for x, y in (args.sam_neg_point or [])]
     return pts
+
+
+def _require_sam_prompt(args, what: str) -> None:
+    """Every SAM entry point needs a checkpoint and a prompt. Without the
+    checkpoint check, `build_sam2(ckpt_path=None)` loads *random weights* and
+    produces plausible, run-to-run-different masks."""
+    if not args.sam_checkpoint:
+        raise SystemExit("no SAM 2 checkpoint found — run ./setup_sam.sh or "
+                         "pass --sam-checkpoint")
+    if not (args.sam_point or args.sam_box):
+        raise SystemExit(f"{what} needs a --sam-point or --sam-box prompt")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -63,6 +80,40 @@ def build_parser() -> argparse.ArgumentParser:
     wb.add_argument("--port", type=int, default=8765)
     wb.add_argument("--no-browser", action="store_true",
                     help="do not open a browser window on start")
+    wb.add_argument("--strict-port", action="store_true",
+                    help="fail rather than falling forward to another port "
+                         "(the desktop shell polls the port it assigned)")
+
+    tk = sub.add_parser("track", help="track an object into the mask cache, no output")
+    tk.add_argument("--input", required=True)
+    _sam_prompt_args(tk)
+    tk.add_argument("--no-cache", action="store_true")
+    tk.add_argument("--cache-dir", default=None)
+    tk.add_argument("--workdir", default="work")
+    tk.add_argument("--keep-temp", action="store_true")
+
+    rt = sub.add_parser("roto", help="track an object and export a matte")
+    rt.add_argument("--input", required=True)
+    rt.add_argument("--output", required=True,
+                    help="output path. With one --format this is used verbatim; "
+                         "with several, siblings are derived from its stem")
+    _sam_prompt_args(rt)
+    rt.add_argument("--format", choices=list(ROTO_FORMATS), action="append",
+                    dest="formats",
+                    help="repeatable. prores4444 = footage with alpha, "
+                         "matte = greyscale movie, png = frame folder "
+                         "(default: prores4444)")
+    rt.add_argument("--matte-feather", type=float, default=0.0,
+                    help="gaussian sigma on the matte edge (0 = hard edge)")
+    rt.add_argument("--matte-dilate", type=int, default=0,
+                    help="grow (>0) or shrink (<0) the matte, in pixels")
+    rt.add_argument("--matte-invert", action="store_true",
+                    help="matte the background instead of the object")
+    rt.add_argument("--no-cache", action="store_true",
+                    help="disable the SAM mask cache (always re-track)")
+    rt.add_argument("--cache-dir", default=None, help="override the SAM cache root")
+    rt.add_argument("--workdir", default="work")
+    rt.add_argument("--keep-temp", action="store_true")
 
     rn = sub.add_parser("run", help="run the full removal pipeline")
     rn.add_argument("--input", required=True)
@@ -86,7 +137,7 @@ def build_parser() -> argparse.ArgumentParser:
                     help="downscale factor for processing (e.g. 0.5 at 4K)")
     rn.add_argument("--max-window-pixels", type=int, default=None,
                     help="safety cap on the processing window area "
-                         "(default 400000; 0 disables)")
+                         "(default 143360; 0 disables)")
     rn.add_argument("--soften", type=float, default=2.5)
     rn.add_argument("--mask-dilation", type=int, default=8)
     rn.add_argument("--feather", type=int, default=4)
@@ -122,7 +173,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "web":
         from .webapp.server import serve
-        serve(args.host, args.port, not args.no_browser)
+        serve(args.host, args.port, not args.no_browser, args.strict_port)
         return 0
 
     _resolve(args)
@@ -135,11 +186,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "sam-preview":
         from . import sam_mask
         from .probe import probe
-        if not args.sam_checkpoint:
-            raise SystemExit("no SAM 2 checkpoint found — run ./setup_sam.sh or "
-                             "pass --sam-checkpoint")
-        if not (args.sam_point or args.sam_box):
-            raise SystemExit("sam-preview needs a --sam-point or --sam-box prompt")
+        _require_sam_prompt(args, "sam-preview")
         cfg = PipelineConfig(
             input=args.input, output="", propainter="", mask_source="sam",
             sam_checkpoint=args.sam_checkpoint, sam_model_cfg=args.sam_config,
@@ -150,15 +197,55 @@ def main(argv: list[str] | None = None) -> int:
         print(f"wrote {args.out}")
         return 0
 
+    if args.cmd == "track":
+        # Populate the mask cache and stop. Nothing is written to the user's
+        # disk, but every later run on this prompt — matte or removal — becomes
+        # a cache hit, which is what lets the UI show the track while scrubbing
+        # and then render without paying for it twice.
+        import shutil
+        from . import sam_mask
+        from .probe import probe
+        _require_sam_prompt(args, "track")
+        cfg = PipelineConfig(
+            input=args.input, output="", mode="roto", mask_source="sam",
+            sam_checkpoint=args.sam_checkpoint, sam_model_cfg=args.sam_config,
+            sam_frame=args.sam_frame, sam_points=_sam_points(args),
+            sam_box=Box(*args.sam_box) if args.sam_box else None,
+            sam_max_side=args.sam_max_side,
+            use_cache=not args.no_cache, cache_dir=args.cache_dir,
+            workdir=args.workdir)
+        info = probe(cfg.input)
+        print(f"[info] {info.width}x{info.height} @ {info.fps:.3f}fps, "
+              f"~{info.nframes} frames, mode=track")
+        work = os.path.abspath(cfg.workdir)
+        os.makedirs(work, exist_ok=True)
+        masks, _ = sam_mask.generate(cfg, info, work)
+        print(f"[done] tracked -> {masks}")
+        if not args.keep_temp:
+            shutil.rmtree(work, ignore_errors=True)
+        return 0
+
+    if args.cmd == "roto":
+        _require_sam_prompt(args, "roto")
+        cfg = PipelineConfig(
+            input=args.input, output=args.output, mode="roto", mask_source="sam",
+            sam_checkpoint=args.sam_checkpoint, sam_model_cfg=args.sam_config,
+            sam_frame=args.sam_frame, sam_points=_sam_points(args),
+            sam_box=Box(*args.sam_box) if args.sam_box else None,
+            sam_max_side=args.sam_max_side,
+            roto_formats=args.formats or ["prores4444"],
+            matte_feather=args.matte_feather, matte_dilate=args.matte_dilate,
+            matte_invert=args.matte_invert,
+            use_cache=not args.no_cache, cache_dir=args.cache_dir,
+            workdir=args.workdir, keep_temp=args.keep_temp)
+        run_pipeline(cfg)
+        return 0
+
     # run
     if args.mask == "box" and not args.box:
         raise SystemExit("--mask box requires --box X Y W H")
     if args.mask == "sam":
-        if not args.sam_checkpoint:
-            raise SystemExit("no SAM 2 checkpoint found — run ./setup_sam.sh or "
-                             "pass --sam-checkpoint")
-        if not (args.sam_point or args.sam_box):
-            raise SystemExit("--mask sam requires a --sam-point or --sam-box prompt")
+        _require_sam_prompt(args, "--mask sam")
     if not args.propainter:
         raise SystemExit("no ProPainter checkout found — run ./setup_propainter.sh "
                          "or pass --propainter")
