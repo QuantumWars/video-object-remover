@@ -277,6 +277,22 @@ def create_app() -> FastAPI:
             raise HTTPException(404, "Resolve is not waiting on anything")
         opened = _open(session["file_path"])
         opened["resolve"] = session
+
+        # Resolve says where results should land — its own media folder, which
+        # shows in Media Storage and is where an editor looks for renders.
+        # Without this the app would default beside the source, which for a
+        # timeline render is a temp directory that gets wiped.
+        out_dir = session.get("output_dir")
+        if out_dir:
+            try:
+                os.makedirs(out_dir, exist_ok=True)
+            except OSError:
+                out_dir = None
+        if out_dir:
+            stem = os.path.splitext(os.path.basename(
+                session.get("clip_name") or session["file_path"]))[0]
+            opened["suggested_output"] = os.path.join(out_dir, f"{stem}.removed.mp4")
+            opened["suggested_roto_output"] = os.path.join(out_dir, f"{stem}.roto.mov")
         return opened
 
     @app.post("/api/resolve/report")

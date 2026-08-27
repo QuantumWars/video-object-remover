@@ -181,8 +181,11 @@ Two ways to send the clip:
 | **Original media** | Processes the source file. Instant, full quality, ignores grades. |
 | **Timeline render** | Renders the clip's span to ProRes 422 HQ first, so grades and transforms are baked in. Isolated on a throwaway duplicate timeline, so nothing above the clip composites into it and your own timeline is never modified. |
 
-Results come back on a new track at the same timecode, into the media pool, or
-wired into the clip's Fusion comp.
+Results are written into Resolve's own media folder —
+`<projectMediaLocation>/Video Object Remover/<project>/` — so they show up in
+Media Storage and sit where an editor looks for renders. Everything a run
+produced is imported into a **Video Object Remover** bin, ready to drag, and can
+also be placed straight onto a new track at the same timecode.
 
 ### Cutting out vs driving a grade
 

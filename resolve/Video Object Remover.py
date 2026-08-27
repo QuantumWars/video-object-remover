@@ -42,6 +42,8 @@ RENDER_DIR = os.path.join(HANDOFF, "render")
 RENDER_FORMAT, RENDER_CODEC = "mov", "ProRes422HQ"
 #: throwaway timeline used to isolate the clip while rendering
 SCRATCH_TIMELINE = "VOR scratch (safe to delete)"
+#: media-pool bin and on-disk folder the results land in
+RESULT_BIN = "Video Object Remover"
 POLL_SECONDS = 1.0
 TIMEOUT_SECONDS = 4 * 60 * 60          # a 4K removal is genuinely hours
 
@@ -258,6 +260,19 @@ def describe(resolve_app, timeline, item, track_index):
         info["file_path"] = pool_item.GetClipProperty("File Path")
         info["source_start"] = int(item.GetLeftOffset())
         info["source_end"] = int(item.GetLeftOffset()) + int(item.GetDuration())
+
+    # Write results into Resolve's own media folder rather than beside whatever
+    # the source happened to be. It shows up in Media Storage, it is where an
+    # editor looks for renders, and it survives the source being on a volume
+    # that is not always mounted.
+    project = resolve_app.GetProjectManager().GetCurrentProject()
+    media_root = project.GetSetting("projectMediaLocation") or ""
+    if media_root and os.path.isdir(media_root):
+        info["output_dir"] = os.path.join(media_root, RESULT_BIN, project.GetName())
+    else:
+        info["output_dir"] = os.path.join(
+            os.path.dirname(info.get("file_path") or ""), RESULT_BIN)
+    info["project"] = project.GetName()
     return info
 
 
@@ -410,20 +425,47 @@ def wait_for_done(win, disp, state):
 # --------------------------------------------------------------------------
 # Bringing it back
 
+def result_bin(media_pool):
+    """A bin for results, so they are easy to find and drag rather than loose
+    in whatever folder happened to be selected."""
+    root = media_pool.GetRootFolder()
+    for folder in (root.GetSubFolderList() or []):
+        if folder.GetName() == RESULT_BIN:
+            return folder
+    return media_pool.AddSubFolder(root, RESULT_BIN) or root
+
+
 def import_result(resolve_app, timeline, result, session):
     media_pool = resolve_app.GetProjectManager().GetCurrentProject().GetMediaPool()
     primary = result.get("primary")
     if not primary or not os.path.exists(primary):
         return False, "the app reported success but the file is missing"
 
-    imported = media_pool.ImportMedia([primary])
+    # Import everything the run produced, not just the primary — a matte run
+    # can write three files and the other two are no use sitting on disk.
+    paths = [p for p in (result.get("outputs") or {}).values()
+             if p and os.path.isfile(p)]
+    if primary not in paths:
+        paths.insert(0, primary)
+
+    previous = media_pool.GetCurrentFolder()
+    imported = []
+    try:
+        media_pool.SetCurrentFolder(result_bin(media_pool))
+        imported = media_pool.ImportMedia(paths) or []
+    finally:
+        if previous:
+            media_pool.SetCurrentFolder(previous)
     if not imported:
         return False, f"Resolve would not import {os.path.basename(primary)}"
+    # ImportMedia returns them in the order given, so the primary is first.
     clip = imported[0]
 
     mode = session.get("return_mode", "plate_track")
+    extra = f" ({len(imported)} files)" if len(imported) > 1 else ""
     if mode == "media_pool":
-        return True, f"Imported {os.path.basename(primary)} into the media pool."
+        return True, (f"In the '{RESULT_BIN}' bin{extra} — drag it to the "
+                      f"timeline when you want it.")
 
     if mode == "luma_matte":
         ok, detail = wire_luma_matte(timeline, clip, session)
@@ -444,8 +486,10 @@ def import_result(resolve_app, timeline, result, session):
         "recordFrame": session.get("record_frame", 0),
     }])
     if not appended:
-        return False, "Imported, but Resolve refused to place it on the timeline."
-    return True, f"Placed on V{track} at the same timecode."
+        return False, (f"In the '{RESULT_BIN}' bin, but Resolve refused to "
+                       f"place it on the timeline — drag it across.")
+    return True, (f"Placed on V{track} at the same timecode, and in the "
+                  f"'{RESULT_BIN}' bin{extra}.")
 
 
 def wire_luma_matte(timeline, clip, session):
