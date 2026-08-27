@@ -122,6 +122,14 @@ class SelectModelRequest(BaseModel):
     model: str
 
 
+class ResolveReportRequest(BaseModel):
+    status: str = "done"                 # done | error | cancelled
+    primary: Optional[str] = None
+    outputs: dict = {}
+    mode: Optional[str] = None
+    error: Optional[str] = None
+
+
 class TrackRequest(BaseModel):
     frame: int = 0
     points: list[Point] = []
@@ -237,6 +245,54 @@ def create_app() -> FastAPI:
     def jobs_active() -> list:
         return [{"id": j.id, "mode": j.mode, "stage": j.stage,
                  "percent": round(j.percent, 1)} for j in jobs.active()]
+
+    # --- DaVinci Resolve -------------------------------------------------
+
+    @app.get("/api/resolve")
+    def resolve_state() -> dict:
+        from .. import resolve_link
+        session = resolve_link.pending_session()
+        return {
+            "session": session,
+            "script_installed": resolve_link.script_installed(),
+            "script_destination": resolve_link.script_destination(),
+        }
+
+    @app.post("/api/resolve/install-script")
+    def resolve_install_script() -> dict:
+        from .. import resolve_link
+        try:
+            dest = resolve_link.install_script()
+        except FileNotFoundError as exc:
+            raise HTTPException(400, str(exc))
+        return {"installed": dest,
+                "note": "Restart Resolve — it only scans for scripts at launch."}
+
+    @app.post("/api/resolve/open")
+    def resolve_open() -> dict:
+        """Open the clip Resolve is waiting on, as a normal session."""
+        from .. import resolve_link
+        session = resolve_link.pending_session()
+        if not session:
+            raise HTTPException(404, "Resolve is not waiting on anything")
+        opened = _open(session["file_path"])
+        opened["resolve"] = session
+        return opened
+
+    @app.post("/api/resolve/report")
+    def resolve_report(req: ResolveReportRequest) -> dict:
+        from .. import resolve_link
+        return resolve_link.report(status=req.status, primary=req.primary,
+                                   outputs=req.outputs, mode=req.mode,
+                                   error=req.error)
+
+    @app.post("/api/resolve/dismiss")
+    def resolve_dismiss() -> dict:
+        from .. import resolve_link
+        # Tell Resolve rather than just forgetting: it is sitting in a poll
+        # loop and would otherwise wait out its full timeout.
+        resolve_link.report(status="cancelled", error="Dismissed in the app.")
+        return {"dismissed": True}
 
     @app.get("/api/models")
     def list_models() -> dict:

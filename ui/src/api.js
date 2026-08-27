@@ -32,6 +32,12 @@ const form = (fields) => {
 export const api = {
   status: () => json('/api/status'),
 
+  resolve: () => json('/api/resolve'),
+  resolveOpen: () => json('/api/resolve/open', { method: 'POST' }),
+  resolveDismiss: () => json('/api/resolve/dismiss', { method: 'POST' }),
+  resolveInstallScript: () => json('/api/resolve/install-script', { method: 'POST' }),
+  resolveReport: (body) => json('/api/resolve/report', asJson(body)),
+
   models: () => json('/api/models'),
   selectModel: (model) => json('/api/models/select', asJson({ model })),
   downloadModel: (model) => json('/api/models/download', asJson({ model })),

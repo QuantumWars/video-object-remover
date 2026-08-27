@@ -49,6 +49,7 @@ export default function App() {
   const [tick, setTick] = useState(0)            // retry pulse while tracking
   const [willWrite, setWillWrite] = useState([]) // resolved destinations
   const [outputsError, setOutputsError] = useState(null)
+  const [resolveJob, setResolveJob] = useState(null)   // the clip Resolve is waiting on
 
   const [jobId, setJobId] = useState(null)
   const job = useJob(jobId)
@@ -67,6 +68,20 @@ export default function App() {
   const tracking = Boolean(trackJobId)
 
   useEffect(() => { api.status().then(setStatus).catch(() => {}) }, [])
+
+  // Resolve writes a handoff file and launches us, so the session may already
+  // be waiting at startup or may land while the app sits open. Poll only while
+  // nothing is loaded — once a clip is open the answer cannot change usefully.
+  useEffect(() => {
+    if (clip) return
+    let alive = true
+    const check = () => api.resolve()
+      .then((r) => { if (alive) setResolveJob(r.session || null) })
+      .catch(() => {})
+    check()
+    const t = setInterval(check, 2000)
+    return () => { alive = false; clearInterval(t) }
+  }, [clip])
 
   // The traffic lights are drawn by the OS on top of our titlebar, so the
   // content has to start clear of them — but only in the desktop shell. A
@@ -296,6 +311,22 @@ export default function App() {
 
   const cancel = async () => { try { await api.cancelJob(jobId) } catch { /* gone */ } }
 
+  // Resolve is blocked in a poll loop waiting for an answer, so every terminal
+  // state has to produce one — a failed render that reports nothing leaves it
+  // waiting until its timeout.
+  const reportedRef = useRef(null)
+  useEffect(() => {
+    if (!clip?.resolve || !job || job.state === 'running') return
+    if (reportedRef.current === job.id) return
+    reportedRef.current = job.id
+    const outputs = Object.fromEntries((job.outputs || [job.output]).map((p, i) => [i, p]))
+    api.resolveReport({
+      status: job.state === 'done' ? 'done' : job.state === 'cancelled' ? 'cancelled' : 'error',
+      primary: job.output, outputs, mode,
+      error: job.state === 'done' ? null : `The ${mode === 'roto' ? 'matte' : 'removal'} did not finish.`,
+    }).catch(() => {})
+  }, [job?.state, job?.id, clip, mode])
+
   if (!clip) {
     // Nothing to segment with yet. The picker lives in the sidebar, which is
     // not on screen until a clip is open, so first run has to offer it here or
@@ -304,7 +335,33 @@ export default function App() {
     return (
       <div className="app">
         <div className="titlebar"><span className="brand">Video Object Remover</span></div>
-        {needsModel ? (
+        {resolveJob && !needsModel ? (
+          <div className="open-screen">
+            <div className="setup">
+              <h1>DaVinci Resolve sent a clip</h1>
+              <div className="resolve-call">
+                <div className="who">Waiting on this clip</div>
+                <div className="clip" title={resolveJob.file_path}>{resolveJob.clip_name}</div>
+                <div className="sub">
+                  {resolveJob.duration} frames from {resolveJob.timeline} · comes back
+                  {resolveJob.return_mode === 'media_pool' ? ' into the media pool'
+                    : resolveJob.return_mode === 'luma_matte' ? ' wired as a luminance matte'
+                    : ' on a new track above'}
+                </div>
+                <div className="actions">
+                  <button className="primary" disabled={opening}
+                          onClick={() => openWith(() => api.resolveOpen())}>
+                    Open it
+                  </button>
+                  <button className="ghost" onClick={() => {
+                    api.resolveDismiss().catch(() => {}); setResolveJob(null)
+                  }}>Dismiss</button>
+                </div>
+              </div>
+              {openError && <div className="banner err">{openError}</div>}
+            </div>
+          </div>
+        ) : needsModel ? (
           <div className="open-screen">
             <div className="setup">
               <h1>Choose a model</h1>

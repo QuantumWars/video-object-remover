@@ -426,3 +426,18 @@ details.logwrap[open] > summary::before { transform: rotate(90deg); }
 }
 .setup h1 { margin: 0; font-size: 19px; font-weight: 600; letter-spacing: -0.02em; }
 .setup > p { margin: 0 0 12px; color: var(--text-2); font-size: 13px; line-height: 1.5; }
+
+/* --------------------------------------------------------------- resolve */
+
+.resolve-call {
+  border: 1px solid rgba(10,132,255,.35); background: rgba(10,132,255,.08);
+  border-radius: var(--r); padding: 12px 14px;
+  display: flex; flex-direction: column; gap: 9px;
+}
+.resolve-call .who { font-size: 12.5px; font-weight: 550; }
+.resolve-call .clip {
+  font: 11px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.resolve-call .actions { display: flex; gap: 8px; }
+.resolve-call .actions button { flex: 1; }
