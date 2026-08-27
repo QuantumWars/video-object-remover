@@ -1,6 +1,6 @@
 {
   "name": "video-object-remover-shell",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "Desktop shell for video-object-remover.",
   "main": "main.js",
@@ -28,11 +28,24 @@
       "error.html"
     ],
     "extraResources": [
-      { "from": "payload", "to": ".", "filter": ["**/*"] }
+      {
+        "from": "payload",
+        "to": ".",
+        "filter": [
+          "**/*"
+        ]
+      }
     ],
     "mac": {
       "category": "public.app-category.video",
-      "target": [{ "target": "dmg", "arch": ["arm64"] }],
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64"
+          ]
+        }
+      ],
       "darkModeSupport": true,
       "hardenedRuntime": false,
       "gatekeeperAssess": false,
@@ -41,8 +54,17 @@
     "dmg": {
       "title": "Video Object Remover ${version}",
       "contents": [
-        { "x": 140, "y": 200, "type": "file" },
-        { "x": 400, "y": 200, "type": "link", "path": "/Applications" }
+        {
+          "x": 140,
+          "y": 200,
+          "type": "file"
+        },
+        {
+          "x": 400,
+          "y": 200,
+          "type": "link",
+          "path": "/Applications"
+        }
       ]
     }
   }

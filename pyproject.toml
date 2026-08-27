@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "video-object-remover"
-version = "0.2.0"
+version = "0.3.0"
 description = "Rotoscope or remove objects in video: SAM 2 tracking with ProRes matte export and ProPainter inpainting."
 readme = "README.md"
 license = { text = "MIT" }

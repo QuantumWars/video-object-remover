@@ -2,5 +2,5 @@
 from .config import Box, PipelineConfig
 from .pipeline import run_pipeline
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 __all__ = ["Box", "PipelineConfig", "run_pipeline", "__version__"]
