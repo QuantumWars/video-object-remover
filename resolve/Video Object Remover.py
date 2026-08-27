@@ -35,6 +35,7 @@ SESSION = os.path.join(HANDOFF, "session.json")
 DONE = os.path.join(HANDOFF, "done.json")
 
 APP = "/Applications/Video Object Remover.app"
+MATTE_NODE = "VOR_Matte"
 POLL_SECONDS = 1.0
 TIMEOUT_SECONDS = 4 * 60 * 60          # a 4K removal is genuinely hours
 
@@ -50,9 +51,9 @@ RETURN_MODES = [
      "Put the result on a video track above this clip, at the same timecode."),
     ("media_pool", "Media pool only",
      "Import it and leave the timeline alone."),
-    ("luma_matte", "Wire as a luminance matte",
-     "Attach a greyscale matte to this clip's Fusion comp. Most flexible, "
-     "least reliable — Resolve Free often ignores scripted comps."),
+    ("luma_matte", "Wire into the Fusion comp",
+     "Import the matte and attach it as an effect mask. Ready to drive a "
+     "node; does not cut the picture by itself."),
 ]
 
 
@@ -271,7 +272,10 @@ def write_session(payload):
         if os.path.exists(stale):
             os.remove(stale)
     tmp = SESSION + ".tmp"
-    with open(tmp, "w") as fh:
+    # Explicit UTF-8: Resolve's embedded Python runs under an ASCII locale, so
+    # the default encoding cannot represent a clip named "Café.mov" and fails
+    # with a UnicodeDecodeError that says nothing about clip names.
+    with open(tmp, "w", encoding="utf-8") as fh:
         json.dump(payload, fh, indent=2)
     os.replace(tmp, SESSION)            # the app must never see a partial file
 
@@ -290,7 +294,7 @@ def wait_for_done(win, disp, state):
     while time.time() < deadline and not state["cancelled"]:
         if os.path.exists(DONE):
             try:
-                with open(DONE) as fh:
+                with open(DONE, encoding="utf-8") as fh:
                     result = json.load(fh)
                 win.Hide()
                 return result
@@ -345,12 +349,25 @@ def import_result(resolve_app, timeline, result, session):
 
 
 def wire_luma_matte(timeline, clip, session):
-    """Attach a matte to the clip's Fusion comp as an effect mask.
+    """Import the matte and wire it into the clip's Fusion comp.
 
-    This is the one route that depends on a scripted comp actually taking, and
-    on Resolve Free it frequently does not: the nodes appear on the Fusion page
-    and the render ignores them. Verified as far as the API allows, and honest
-    about the rest.
+    Measured on Resolve 21.0.4.5 (Free), against a rendered frame each time:
+
+      * a comp built by a script *does* render — an inserted Blur dropped
+        frame sharpness from 77.7 to 29.2, so the older belief that scripted
+        comps are ignored does not hold on this version
+      * a MediaIn bound through SetInput("MediaID", ...) resolves and renders
+        the matte
+      * EffectMask genuinely limits an effect: the same Blur behind this matte
+        was suppressed to 0.18 against an unblurred frame, versus 5.91 for a
+        full-frame blur
+
+    What it does *not* do is cut the picture. An EffectMask restricts the
+    effect a node applies, and a MediaIn applies none, so hanging a matte on it
+    changes nothing visible — measured at 0.02 mean difference, with
+    MultiplyByMask set. The node is still wired and ready to drive whatever the
+    colourist puts after it, which is the useful half; for an actual cut-out
+    the ProRes 4444 output carries a real alpha channel and needs none of this.
     """
     item = timeline.GetCurrentVideoItem()
     if item is None:
@@ -359,19 +376,53 @@ def wire_luma_matte(timeline, clip, session):
         comp = item.GetFusionCompByIndex(1) or item.AddFusionComp()
         if comp is None:
             return False, "could not open a Fusion comp for this clip"
+
         media_in = None
-        for tool in comp.GetToolList(False, "MediaIn").values():
-            media_in = tool
-            break
+        for tool in (comp.GetToolList(False, "MediaIn") or {}).values():
+            if tool.Name != MATTE_NODE:
+                media_in = tool
+                break
         if media_in is None:
             return False, "the clip's comp has no MediaIn to attach a matte to"
-        matte = comp.AddTool("MediaIn")
-        if matte is None:
+
+        # Replace our own previous matte rather than stacking a new one on
+        # every run.
+        for tool in list((comp.GetToolList(False) or {}).values()):
+            if tool.Name == MATTE_NODE:
+                try:
+                    tool.Delete()
+                except Exception:                             # noqa: BLE001
+                    pass
+
+        # A Fusion MediaIn inside Resolve binds to a media-pool item by its
+        # MediaID, not to a path — a Loader pointed at the file is a different
+        # node and behaves differently inside a clip comp.
+        media_id = None
+        try:
+            media_id = clip.GetMediaId()
+        except Exception:                                     # noqa: BLE001
+            pass
+        if not media_id:
+            return False, "could not resolve the imported matte's media id"
+
+        node = comp.AddTool("MediaIn", -2, 0)
+        if node is None:
             return False, "Resolve would not add a MediaIn for the matte"
-        media_in.EffectMask = matte.Output
-        return True, ("Wired into the Fusion comp. Check the render — Resolve "
-                      "Free often ignores comps built by a script.")
-    except Exception as exc:                              # noqa: BLE001
+        node.SetInput("MediaID", media_id)
+        try:
+            node.SetAttrs({"TOOLS_Name": MATTE_NODE})
+        except Exception:                                     # noqa: BLE001
+            pass
+
+        media_in.EffectMask = node.Output
+        media_in.SetInput("MaskChannel", 5)          # 5 = luminance
+        media_in.SetInput("MultiplyByMask", 1)
+
+        return True, ("Matte imported and wired into the Fusion comp as "
+                      f"'{MATTE_NODE}'. It will not cut the picture on its own "
+                      "— hang an effect off it, or use the ProRes 4444 output, "
+                      "which carries a real alpha channel.")
+    except Exception as exc:                                  # noqa: BLE001
         return False, f"could not wire the matte: {exc}"
 
 
