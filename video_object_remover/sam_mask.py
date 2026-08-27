@@ -60,6 +60,28 @@ def _cache_key(cfg: PipelineConfig, info: VideoInfo) -> str:
     return hashlib.sha1("|".join(parts).encode()).hexdigest()[:16]
 
 
+def cache_dir(cfg: PipelineConfig, info: VideoInfo) -> str:
+    """Where this prompt's masks live, whether or not they exist yet.
+
+    Exposed so a caller can read a completed track back frame by frame — the UI
+    scrubs through it — without re-deriving the key and getting it subtly wrong.
+    """
+    root = cfg.cache_dir or _default_cache_root()
+    return os.path.join(root, _cache_key(cfg, info))
+
+
+def cached_masks(cfg: PipelineConfig, info: VideoInfo) -> Optional[str]:
+    """The masks dir for a *complete* track, or None. Same completeness rule
+    `generate` uses, so the two can never disagree about what counts as a hit."""
+    d = cache_dir(cfg, info)
+    masks = os.path.join(d, "masks_full")
+    if not (os.path.isfile(os.path.join(d, "bboxes.json")) and os.path.isdir(masks)):
+        return None
+    if len([f for f in os.listdir(masks) if f.endswith(".png")]) != info.nframes:
+        return None
+    return masks
+
+
 def _device():
     import torch
     if torch.cuda.is_available():
@@ -163,7 +185,11 @@ def generate(cfg: PipelineConfig, info: VideoInfo, work: str):
     for out_idx, _obj_ids, logits in predictor.propagate_in_video(state):
         _save(out_idx, logits)
         done += 1
-        if done % 25 == 0 or done == info.nframes:
+        # Every 5, not every 25: each mask is written to the cache as it is
+        # produced, so this number is also how far a viewer can already show the
+        # track. At ~1.3 frames/s a 25-frame stride is a 19-second stall with
+        # nothing moving on screen.
+        if done % 5 == 0 or done == info.nframes:
             print(f"[sam] tracked {done}/{info.nframes}", flush=True)
     if cfg.sam_frame > 0:  # cover frames before the prompt
         for out_idx, _obj_ids, logits in predictor.propagate_in_video(

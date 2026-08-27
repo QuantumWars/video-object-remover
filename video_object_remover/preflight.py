@@ -115,3 +115,46 @@ def run(cfg: PipelineConfig, info: VideoInfo, window: Window,
     if warn:
         warnings.append(warn)
     return Report(warnings=warnings)
+
+
+def check_output_dir(path: str) -> None:
+    """Like `check_output`, for a format whose output is a folder of frames."""
+    if os.path.isfile(path):
+        raise PreflightError(f"output path is an existing file: {path}")
+    try:
+        os.makedirs(path, exist_ok=True)
+    except OSError as exc:
+        raise PreflightError(f"cannot create output directory {path}: {exc}")
+    if not os.access(path, os.W_OK):
+        raise PreflightError(f"output directory is not writable: {path}")
+
+
+def estimate_roto_bytes(info: VideoInfo, nframes: int) -> int:
+    """A PNG roto sequence is full-resolution and writes two files per frame
+    (greyscale matte + RGBA cut-out), which is far more disk than the movie
+    formats. Greyscale mattes are mostly flat and compress hard; the RGBA frames
+    do not."""
+    per_frame = info.width * info.height * (_PNG_BPP + 0.3)
+    return int(per_frame * nframes)
+
+
+def run_roto(cfg: PipelineConfig, info: VideoInfo, outputs: dict,
+             nframes: int | None = None) -> Report:
+    """Preflight for a rotoscoping run. There is no processing window and no
+    inpaint, so the window-based disk estimate does not apply — only the PNG
+    sequence is big enough to be worth checking."""
+    warnings: list = []
+    check_tools()
+    check_source(info)
+    for fmt, path in outputs.items():
+        if fmt == "png":
+            check_output_dir(path)
+        else:
+            check_output(path)
+
+    if "png" in outputs:
+        needed = estimate_roto_bytes(info, nframes or info.nframes)
+        warn = check_disk(outputs["png"], needed)
+        if warn:
+            warnings.append(warn)
+    return Report(warnings=warnings)
