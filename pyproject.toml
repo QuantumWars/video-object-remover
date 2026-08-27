@@ -42,4 +42,7 @@ video-object-remover = "video_object_remover.cli:main"
 packages = ["video_object_remover", "video_object_remover.webapp"]
 
 [tool.setuptools.package-data]
-"video_object_remover.webapp" = ["static/*"]
+# The UI is a Vite build: index.html plus a hashed assets/ folder. The bare
+# "static/*" glob does not descend, so the wheel would ship the HTML with no
+# JS or CSS — a blank page that looks like a runtime bug.
+"video_object_remover.webapp" = ["static/*", "static/assets/*"]

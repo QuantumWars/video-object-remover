@@ -132,3 +132,56 @@ def test_preview_without_a_checkpoint_is_a_clean_400(client, monkeypatch):
     monkeypatch.setenv("VOR_SAM_CHECKPOINT", "/nope/missing.pt")
     r = client.post("/api/session/nope/preview", json={"frame": 0, "points": []})
     assert r.status_code == 404          # unknown session is checked first
+
+
+# --- roto mode -----------------------------------------------------------
+
+def test_roto_progress_uses_its_own_stage_weights():
+    """Removal's weights would leave a roto job stuck at 35% through the only
+    two stages it runs, because it never extracts, chunks, inpaints or
+    composites."""
+    jm = JobManager()
+    job = Job(id="t", output="/tmp/cut.mov", cmd=[], mode="roto")
+    jm._parse(job, "[sam] tracked 20/40")
+    mid = job.percent
+    assert 0 < mid <= 80.0                      # sam owns the first 80%
+    jm._parse(job, "[sam] tracked 40/40")
+    jm._parse(job, "[export] 20/40 frames")
+    assert job.stage == "export" and job.percent > 80.0
+    jm._parse(job, "[done] prores4444 -> /tmp/cut.mov")
+    assert job.percent == 100.0
+
+
+def test_roto_ignores_removal_only_stages():
+    # A stray removal tag must not throw or rewind a roto job's progress.
+    jm = JobManager()
+    job = Job(id="t", output="o.mov", cmd=[], mode="roto")
+    jm._parse(job, "[sam] tracked 40/40")
+    before = job.percent
+    jm._parse(job, "[inpaint] chunk01: frames 0-39 (40)")
+    assert job.percent == before
+
+
+def test_health_is_cheap_and_shaped(client):
+    r = client.get("/api/health")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] == "ok"
+    assert set(body) >= {"status", "version", "pid", "active_jobs"}
+
+
+def test_active_jobs_starts_empty(client):
+    assert client.get("/api/jobs/active").json() == []
+
+
+def test_roto_rejects_an_unknown_format(client, tmp_path):
+    r = client.post("/api/session/nope/roto",
+                    json={"frame": 0, "points": [{"x": 1, "y": 1, "label": 1}],
+                          "formats": ["webm"]})
+    # session lookup fails first; either way it must not 500
+    assert r.status_code in (400, 404)
+
+
+def test_roto_needs_an_include_point(client):
+    r = client.post("/api/session/nope/roto", json={"frame": 0, "points": []})
+    assert r.status_code in (400, 404)

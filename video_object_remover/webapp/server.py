@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+import sys
 import tempfile
 import uuid
 from dataclasses import dataclass, field
@@ -36,8 +37,23 @@ class Session:
     path: str
     info: VideoInfo
     tmpdir: Optional[str] = None
+    #: the prompt of the most recent track, so scrubbing can read its masks back
+    track: Optional[dict] = None
     _frames: dict = field(default_factory=dict)
     _previews: dict = field(default_factory=dict)
+    _masks: dict = field(default_factory=dict)
+
+    def mask(self, masks_dir: str, n: int):
+        """One frame of a completed track. Masks are `f_%06d.png`, 1-based."""
+        if n not in self._masks:
+            path = os.path.join(masks_dir, f"f_{n + 1:06d}.png")
+            m = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
+            if m is None:
+                return None
+            if len(self._masks) > 24:
+                self._masks.clear()
+            self._masks[n] = m
+        return self._masks[n]
 
     def frame(self, n: int) -> np.ndarray:
         n = max(0, min(n, max(0, self.info.nframes - 1)))
@@ -101,6 +117,34 @@ class RunRequest(BaseModel):
     pad: int = 160
 
 
+class TrackRequest(BaseModel):
+    frame: int = 0
+    points: list[Point] = []
+    sam_checkpoint: Optional[str] = None
+
+
+class ChooseRequest(BaseModel):
+    kind: str = "file"                       # "file" | "folder"
+    default_name: Optional[str] = None
+    default_dir: Optional[str] = None
+
+
+class OutputsRequest(BaseModel):
+    output: str
+    formats: list[str] = ["prores4444"]
+
+
+class RotoRequest(BaseModel):
+    frame: int = 0
+    points: list[Point] = []
+    output: Optional[str] = None
+    sam_checkpoint: Optional[str] = None
+    formats: list[str] = ["prores4444"]
+    matte_feather: float = 0.0
+    matte_dilate: int = 0
+    matte_invert: bool = False
+
+
 def create_app() -> FastAPI:
     app = FastAPI(title="video-object-remover")
     sessions: dict[str, Session] = {}
@@ -119,7 +163,7 @@ def create_app() -> FastAPI:
         return Response(buf.tobytes(), media_type="image/jpeg",
                         headers={"Cache-Control": "no-store"})
 
-    def _default_output(path: str, uploaded: bool) -> str:
+    def _default_output(path: str, uploaded: bool, suffix: str = ".removed.mp4") -> str:
         """Where the result should land.
 
         A dragged-in file is copied to a temp dir, and defaulting the output
@@ -129,8 +173,8 @@ def create_app() -> FastAPI:
         """
         stem, _ = os.path.splitext(path)
         if not uploaded:
-            return f"{stem}.removed.mp4"
-        name = os.path.basename(stem) + ".removed.mp4"
+            return f"{stem}{suffix}"
+        name = os.path.basename(stem) + suffix
         for folder in ("Movies", "Desktop"):
             dest = os.path.join(os.path.expanduser("~"), folder)
             if os.path.isdir(dest) and os.access(dest, os.W_OK):
@@ -146,12 +190,45 @@ def create_app() -> FastAPI:
             raise HTTPException(400, f"not a readable video: {exc}")
         sid = uuid.uuid4().hex[:12]
         sessions[sid] = Session(id=sid, path=path, info=info, tmpdir=tmpdir)
+        uploaded = tmpdir is not None
         return {"id": sid, "path": path, "width": info.width, "height": info.height,
                 "fps": round(info.fps, 3), "nframes": info.nframes,
                 "duration": round(info.duration, 2), "has_audio": info.has_audio,
-                "suggested_output": _default_output(path, tmpdir is not None)}
+                "suggested_output": _default_output(path, uploaded),
+                # Neutral, because this is a *base* path: with several formats
+                # chosen the stem is reused, and ".matte.mov" would compound
+                # into "shot.matte.matte.mov".
+                "suggested_roto_output": _default_output(path, uploaded, ".roto.mov")}
 
     # ---------------------------------------------------------------- routes
+
+    @app.get("/api/health")
+    def health() -> dict:
+        """Cheap liveness probe. The desktop shell polls this after spawning the
+        backend, so it must stay dependency-free and never touch the models."""
+        from .. import __version__
+        return {"status": "ok", "version": __version__, "pid": os.getpid(),
+                "active_jobs": len(jobs.active())}
+
+    @app.post("/api/shutdown")
+    def shutdown() -> dict:
+        """Cancel every running job, then stop.
+
+        The desktop shell calls this before quitting. Jobs run in their own
+        process group so that cancelling one can killpg it — which means simply
+        killing this process would orphan ProPainter, a multi-GB torch process
+        with nothing left to stop it.
+        """
+        import signal
+        import threading
+        n = jobs.cancel_all()
+        threading.Timer(0.3, lambda: os.kill(os.getpid(), signal.SIGTERM)).start()
+        return {"cancelled": n}
+
+    @app.get("/api/jobs/active")
+    def jobs_active() -> list:
+        return [{"id": j.id, "mode": j.mode, "stage": j.stage,
+                 "percent": round(j.percent, 1)} for j in jobs.active()]
 
     @app.get("/api/status")
     def status() -> dict:
@@ -205,6 +282,69 @@ def create_app() -> FastAPI:
             headers={"Cache-Control": "no-store",
                      "X-Mask-Coverage": f"{coverage:.4f}"})
 
+    def _track_cfg(s: Session, frame: int, points: list, ckpt: str):
+        """A config carrying only what the mask cache is keyed on, so the key it
+        produces is the same one `run`/`roto` will produce for this prompt."""
+        from ..config import PipelineConfig
+        return PipelineConfig(
+            input=s.path, output="", mask_source="sam", mode="roto",
+            sam_checkpoint=ckpt, sam_model_cfg=discover.sam_config_for(ckpt),
+            sam_frame=frame, sam_points=[(p.x, p.y, p.label) for p in points])
+
+    @app.post("/api/session/{sid}/track")
+    def track(sid: str, req: TrackRequest):
+        """Propagate the selection across the clip so the user can scrub it.
+
+        This is the review step. Rendering without it means finding out the
+        track drifted after an hour of inpainting, and the whole reason it is
+        cheap to offer is that the result is cached by prompt: whatever renders
+        afterwards reuses it for free.
+        """
+        from .. import sam_mask
+        s = _session(sid)
+        if not any(p.label == 1 for p in req.points):
+            raise HTTPException(400, "add at least one left-click point on the object")
+        ckpt = req.sam_checkpoint or discover.find_sam_checkpoint()
+        if not ckpt:
+            raise HTTPException(400, "no SAM 2 checkpoint found — run ./setup_sam.sh")
+
+        cfg = _track_cfg(s, req.frame, req.points, ckpt)
+        masks = sam_mask.cached_masks(cfg, s.info)
+        s.track = {"frame": req.frame,
+                   "points": [(p.x, p.y, p.label) for p in req.points],
+                   "checkpoint": ckpt,
+                   "dir": masks or os.path.join(sam_mask.cache_dir(cfg, s.info),
+                                                "masks_full")}
+        s._masks.clear()
+        if masks:                       # already tracked with this exact prompt
+            return {"job": None, "cached": True, "frames": s.info.nframes}
+
+        cmd = cli_command() + [
+            "track", "--input", s.path,
+            "--sam-checkpoint", ckpt,
+            "--sam-config", discover.sam_config_for(ckpt),
+            "--sam-frame", str(req.frame),
+            "--workdir", os.path.join(tempfile.gettempdir(), f"vor-track-{sid}"),
+        ]
+        for p in req.points:
+            cmd += ["--sam-point" if p.label == 1 else "--sam-neg-point",
+                    str(p.x), str(p.y)]
+        job = jobs.start(cmd, s.track["dir"], mode="track", outputs=[])
+        return {"job": job.id, "cached": False, "frames": s.info.nframes}
+
+    @app.get("/api/session/{sid}/overlay")
+    def overlay_frame(sid: str, n: int = 0):
+        """A frame with the tracked mask drawn on it. 404 when there is no
+        track yet, which the UI reads as 'show the plain frame'."""
+        from ..sam_mask import overlay
+        s = _session(sid)
+        if not s.track:
+            raise HTTPException(404, "no track for this session")
+        m = s.mask(s.track["dir"], n)
+        if m is None:
+            raise HTTPException(404, f"no tracked mask for frame {n}")
+        return _jpeg(overlay(s.frame(n), m, ()))
+
     @app.post("/api/session/{sid}/run")
     def run(sid: str, req: RunRequest):
         s = _session(sid)
@@ -236,8 +376,53 @@ def create_app() -> FastAPI:
             cmd += ["--sam-point" if p.label == 1 else "--sam-neg-point",
                     str(p.x), str(p.y)]
 
-        job = jobs.start(cmd, output)
+        job = jobs.start(cmd, output, mode="remove", outputs=[output])
         return {"job": job.id, "output": output, "command": " ".join(cmd)}
+
+    @app.post("/api/session/{sid}/roto")
+    def roto(sid: str, req: RotoRequest):
+        """Track the object and export a matte. No ProPainter involved — the
+        same track the removal path would use, delivered instead of consumed."""
+        from ..matte_export import FORMATS, resolve_outputs
+        s = _session(sid)
+        if not any(p.label == 1 for p in req.points):
+            raise HTTPException(400, "add at least one left-click point on the object")
+        bad = [f for f in req.formats if f not in FORMATS]
+        if bad:
+            raise HTTPException(400, f"unknown format(s): {', '.join(bad)}")
+        if not req.formats:
+            raise HTTPException(400, "choose at least one output format")
+        ckpt = req.sam_checkpoint or discover.find_sam_checkpoint()
+        if not ckpt:
+            raise HTTPException(400, "no SAM 2 checkpoint found — run ./setup_sam.sh")
+
+        base = os.path.abspath(os.path.expanduser(
+            req.output or _default_output(s.path, s.tmpdir is not None, ".matte.mov")))
+        os.makedirs(os.path.dirname(base) or ".", exist_ok=True)
+        outputs = resolve_outputs(base, list(req.formats))
+
+        cmd = cli_command() + [
+            "roto", "--input", s.path, "--output", base,
+            "--sam-checkpoint", ckpt,
+            "--sam-config", discover.sam_config_for(ckpt),
+            "--sam-frame", str(req.frame),
+            "--matte-feather", str(req.matte_feather),
+            "--matte-dilate", str(req.matte_dilate),
+            "--workdir", os.path.join(tempfile.gettempdir(), f"vor-roto-{sid}"),
+        ]
+        if req.matte_invert:
+            cmd.append("--matte-invert")
+        for f in req.formats:
+            cmd += ["--format", f]
+        for p in req.points:
+            cmd += ["--sam-point" if p.label == 1 else "--sam-neg-point",
+                    str(p.x), str(p.y)]
+
+        # The primary output decides success; `outputs` is what the UI reveals.
+        primary = outputs.get("prores4444") or outputs.get("matte") or outputs["png"]
+        job = jobs.start(cmd, primary, mode="roto", outputs=list(outputs.values()))
+        return {"job": job.id, "output": primary, "outputs": outputs,
+                "command": " ".join(cmd)}
 
     @app.get("/api/job/{jid}")
     def job_status(jid: str) -> dict:
@@ -255,8 +440,80 @@ def create_app() -> FastAPI:
         job = jobs.get(jid)
         if job is None or job.state != "done":
             raise HTTPException(404, "result not ready")
-        return FileResponse(job.output, media_type="video/mp4",
+        if not os.path.isfile(job.output):
+            raise HTTPException(400, "this job's output is a folder — reveal it instead")
+        # A roto job writes .mov, not .mp4. Serving ProRes as video/mp4 makes the
+        # browser try to play something it cannot decode.
+        ext = os.path.splitext(job.output)[1].lower()
+        media = {".mp4": "video/mp4", ".mov": "video/quicktime"}.get(
+            ext, "application/octet-stream")
+        return FileResponse(job.output, media_type=media,
                             filename=os.path.basename(job.output))
+
+    @app.post("/api/roto/outputs")
+    def roto_outputs(req: OutputsRequest) -> dict:
+        """What a roto run with these settings would actually write.
+
+        The UI shows this before you commit, and it asks the server rather than
+        reimplementing the naming rule — a preview that disagrees with reality
+        is worse than no preview.
+        """
+        from ..matte_export import resolve_outputs
+        try:
+            base = os.path.abspath(os.path.expanduser(req.output.strip()))
+            return {"outputs": resolve_outputs(base, list(req.formats))}
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+
+    @app.post("/api/choose-output")
+    def choose_output(req: ChooseRequest) -> dict:
+        """Native save/choose panel, so a destination is picked rather than typed.
+
+        The server is on localhost and owns the filesystem the render writes to,
+        which is why the dialog belongs here: a browser file input would hand
+        back a sandboxed handle the pipeline cannot write through.
+        """
+        import subprocess
+        if sys.platform != "darwin":
+            raise HTTPException(501, "native picker is macOS-only — type the path")
+
+        start = os.path.expanduser(req.default_dir or "~/Movies")
+        if not os.path.isdir(start):
+            start = os.path.expanduser("~")
+        if req.kind == "folder":
+            script = (f'POSIX path of (choose folder with prompt "Choose an export folder" '
+                      f'default location POSIX file "{start}")')
+        else:
+            name = (req.default_name or "output.mov").replace('"', "")
+            script = (f'POSIX path of (choose file name with prompt "Export to" '
+                      f'default name "{name}" default location POSIX file "{start}")')
+        try:
+            out = subprocess.run(["osascript", "-e", script],
+                                 capture_output=True, text=True, timeout=300)
+        except subprocess.TimeoutExpired:
+            raise HTTPException(408, "the picker timed out")
+        if out.returncode != 0:
+            # Cancelling is a normal outcome, not an error the user should see.
+            if "User canceled" in (out.stderr or ""):
+                return {"cancelled": True, "path": None}
+            raise HTTPException(500, (out.stderr or "picker failed").strip())
+        return {"cancelled": False, "path": out.stdout.strip().rstrip("/")}
+
+    @app.post("/api/reveal")
+    def reveal_in_finder(path: str = Form(...)) -> dict:
+        """Show a result in Finder. ProRes will not play in a browser, so for a
+        roto job this is the result view."""
+        import subprocess
+        target = os.path.abspath(os.path.expanduser(path))
+        if not os.path.exists(target):
+            raise HTTPException(404, f"no such path: {target}")
+        if sys.platform == "darwin":
+            subprocess.run(["open", "-R", target], check=False)
+        elif sys.platform.startswith("linux"):
+            subprocess.run(["xdg-open", os.path.dirname(target)], check=False)
+        else:
+            subprocess.run(["explorer", "/select,", target], check=False)
+        return {"revealed": target}
 
     @app.get("/api/job/{jid}/log", response_class=JSONResponse)
     def job_log(jid: str) -> dict:
@@ -265,7 +522,17 @@ def create_app() -> FastAPI:
             raise HTTPException(404, "no such job")
         return {"lines": list(job.lines)}
 
-    app.mount("/", StaticFiles(directory=_STATIC, html=True), name="static")
+    if os.path.isfile(os.path.join(_STATIC, "index.html")):
+        app.mount("/", StaticFiles(directory=_STATIC, html=True), name="static")
+    else:
+        # The UI is a Vite build. Missing it is a build mistake, not a runtime
+        # one, so say exactly that instead of serving a 404 nobody can read.
+        @app.get("/")
+        def _no_ui() -> Response:
+            return Response(
+                "<h1>UI not built</h1><p>Run <code>npm --prefix ui install &amp;&amp; "
+                "npm --prefix ui run build</code>, then reload.</p>",
+                media_type="text/html", status_code=503)
     return app
 
 
@@ -290,12 +557,19 @@ def free_port(host: str, preferred: int, tries: int = 20) -> int:
         return sock.getsockname()[1]
 
 
-def serve(host: str = "127.0.0.1", port: int = 8765, open_browser: bool = True) -> None:
+def serve(host: str = "127.0.0.1", port: int = 8765, open_browser: bool = True,
+          strict_port: bool = False) -> None:
     import uvicorn
-    chosen = free_port(host, port)
-    if chosen != port:
-        print(f"[web] port {port} is in use — using {chosen}")
-    port = chosen
+    if strict_port:
+        # The desktop shell picks a free port itself and then polls that exact
+        # port for health. Silently landing on a different one would leave it
+        # polling nothing until it times out, with a healthy server running.
+        print(f"[web] binding {port} (strict)")
+    else:
+        chosen = free_port(host, port)
+        if chosen != port:
+            print(f"[web] port {port} is in use — using {chosen}")
+        port = chosen
     url = f"http://{host}:{port}"
     if open_browser:
         import threading
