@@ -9,11 +9,13 @@ from __future__ import annotations
 import re
 import subprocess
 
+from .ffmpeg import ffmpeg_bin
+
 
 def detect_cuts(input_path: str, threshold: float, fps: float) -> list[int]:
     """Return the frame indices where ffmpeg detects a scene change."""
     proc = subprocess.run(
-        ["ffmpeg", "-i", input_path,
+        [ffmpeg_bin(), "-i", input_path,
          "-filter_complex", f"select='gt(scene,{threshold})',metadata=print:file=-",
          "-an", "-f", "null", "-"],
         capture_output=True, text=True,

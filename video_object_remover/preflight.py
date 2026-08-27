@@ -11,6 +11,7 @@ import shutil
 from dataclasses import dataclass
 
 from .config import PipelineConfig, Window
+from .ffmpeg import find_ffmpeg, find_ffprobe
 from .probe import VideoInfo
 
 #: rough bytes per pixel for the PNG sequences we write (frames + inpainted out)
@@ -31,11 +32,21 @@ class Report:
 def check_tools() -> None:
     """ffmpeg and ffprobe are shelled out to everywhere; a missing binary
     otherwise surfaces as a FileNotFoundError from deep inside a helper."""
-    missing = [t for t in ("ffmpeg", "ffprobe") if shutil.which(t) is None]
-    if missing:
+    missing = [name for name, found in (("ffmpeg", find_ffmpeg()),
+                                        ("ffprobe", find_ffprobe())) if not found]
+    if not missing:
+        return
+    # Distinguish "you pointed VOR_* somewhere wrong" from "it isn't installed" —
+    # the override is authoritative and will not fall back to PATH.
+    overridden = [f"VOR_{n.upper()}" for n in missing
+                  if os.environ.get(f"VOR_{n.upper()}")]
+    if overridden:
         raise PreflightError(
-            f"{' and '.join(missing)} not found on PATH. Install with: "
-            f"brew install ffmpeg (macOS) or apt install ffmpeg (Linux).")
+            f"{' and '.join(overridden)} points at something that is not an "
+            f"executable file. Fix it or unset it.")
+    raise PreflightError(
+        f"{' and '.join(missing)} not found on PATH. Install with: "
+        f"brew install ffmpeg (macOS) or apt install ffmpeg (Linux).")
 
 
 def check_source(info: VideoInfo) -> None:

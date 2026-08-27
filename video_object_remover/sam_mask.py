@@ -26,6 +26,7 @@ import cv2
 import numpy as np
 
 from .config import Box, PipelineConfig
+from .ffmpeg import ffmpeg_bin
 from .probe import VideoInfo
 
 
@@ -77,7 +78,7 @@ def _extract_jpegs(input_path: str, out_dir: str, max_side: int,
     sw = int(round(frame_w * scale)) & ~1
     sh = int(round(frame_h * scale)) & ~1
     subprocess.run(
-        ["ffmpeg", "-y", "-loglevel", "error", "-i", input_path,
+        [ffmpeg_bin(), "-y", "-loglevel", "error", "-i", input_path,
          "-vf", f"scale={sw}:{sh}", "-start_number", "0",
          os.path.join(out_dir, "%05d.jpg")],
         check=True,
@@ -191,7 +192,7 @@ def preview(cfg: PipelineConfig, info: VideoInfo, out_path: str) -> None:
     _require_checkpoint(cfg.sam_checkpoint)
     os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
     tmp = out_path + ".frame.png"
-    subprocess.run(["ffmpeg", "-y", "-loglevel", "error",
+    subprocess.run([ffmpeg_bin(), "-y", "-loglevel", "error",
                     "-ss", str(cfg.sam_frame / info.fps), "-i", cfg.input,
                     "-frames:v", "1", tmp], check=True)
     frame = cv2.imread(tmp)

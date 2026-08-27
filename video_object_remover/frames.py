@@ -4,6 +4,7 @@ import os
 import subprocess
 
 from .config import Window
+from .ffmpeg import ffmpeg_bin
 
 
 def extract_window(input_path: str, window: Window, out_dir: str) -> int:
@@ -18,7 +19,7 @@ def extract_window(input_path: str, window: Window, out_dir: str) -> int:
     if (window.proc_w, window.proc_h) != (window.w, window.h):
         vf += f",scale={window.proc_w}:{window.proc_h}"
     subprocess.run(
-        ["ffmpeg", "-y", "-loglevel", "error", "-i", input_path,
+        [ffmpeg_bin(), "-y", "-loglevel", "error", "-i", input_path,
          "-vf", vf, os.path.join(out_dir, "f_%06d.png")],
         check=True,
     )

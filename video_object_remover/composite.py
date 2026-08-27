@@ -23,6 +23,7 @@ import cv2
 import numpy as np
 
 from .config import PipelineConfig, Window
+from .ffmpeg import encoders, ffmpeg_bin
 from .probe import VideoInfo
 
 _FEATHER_KERNEL = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
@@ -32,14 +33,35 @@ def _luma(bgr: np.ndarray) -> np.ndarray:
     return 0.114 * bgr[..., 0] + 0.587 * bgr[..., 1] + 0.299 * bgr[..., 2]
 
 
+def h264_args(crf: int, preset: str) -> list[str]:
+    """H.264 encoder flags for whichever encoder this ffmpeg build actually has.
+
+    x264 is GPL. The build we ship with the packaged app is LGPL-only — linking
+    x264 would relicense the whole app — so libx264 is not guaranteed to exist.
+    macOS always has VideoToolbox, whose H.264 encoder is not GPL, so fall back
+    to that rather than failing.
+    """
+    have = encoders()
+    if "libx264" in have:
+        return ["-c:v", "libx264", "-preset", preset, "-crf", str(crf),
+                "-pix_fmt", "yuv420p"]
+    if "h264_videotoolbox" in have:
+        # VideoToolbox has no CRF. Its -q:v runs 1..100 with higher meaning
+        # better, roughly inverse to x264's 0..51, so map across the two ranges.
+        q = max(1, min(100, round(100 - crf * (99 / 51))))
+        return ["-c:v", "h264_videotoolbox", "-q:v", str(q), "-pix_fmt", "yuv420p"]
+    raise RuntimeError(
+        "this ffmpeg build has neither libx264 nor h264_videotoolbox, so it "
+        "cannot write H.264. Check VOR_FFMPEG.")
+
+
 def _open_encoder(cfg: PipelineConfig, info: VideoInfo) -> subprocess.Popen:
-    cmd = ["ffmpeg", "-y", "-loglevel", "error",
+    cmd = [ffmpeg_bin(), "-y", "-loglevel", "error",
            "-f", "rawvideo", "-pix_fmt", "bgr24",
-           "-s", f"{info.width}x{info.height}", "-r", f"{info.fps}", "-i", "-"]
+           "-s", f"{info.width}x{info.height}", "-r", info.rate, "-i", "-"]
     if info.has_audio:
         cmd += ["-i", cfg.input, "-map", "0:v", "-map", "1:a?", "-c:a", "copy"]
-    cmd += ["-c:v", "libx264", "-preset", cfg.preset, "-crf", str(cfg.crf),
-            "-pix_fmt", "yuv420p", cfg.output]
+    cmd += h264_args(cfg.crf, cfg.preset) + [cfg.output]
     return subprocess.Popen(cmd, stdin=subprocess.PIPE)
 
 
@@ -124,7 +146,7 @@ def run(cfg: PipelineConfig, info: VideoInfo, window: Window,
 def preview(cfg_input: str, box, at: float, out_path: str) -> None:
     """Draw a static box on one frame so a user can verify it before a full run."""
     subprocess.run(
-        ["ffmpeg", "-y", "-loglevel", "error", "-ss", str(at), "-i", cfg_input,
+        [ffmpeg_bin(), "-y", "-loglevel", "error", "-ss", str(at), "-i", cfg_input,
          "-frames:v", "1",
          "-vf", f"drawbox=x={box.x}:y={box.y}:w={box.w}:h={box.h}:color=red@1:t=3",
          out_path],
