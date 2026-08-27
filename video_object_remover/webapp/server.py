@@ -11,6 +11,7 @@ import logging
 import os
 import shutil
 import sys
+import threading
 import tempfile
 import uuid
 from dataclasses import dataclass, field
@@ -117,6 +118,10 @@ class RunRequest(BaseModel):
     pad: int = 160
 
 
+class SelectModelRequest(BaseModel):
+    model: str
+
+
 class TrackRequest(BaseModel):
     frame: int = 0
     points: list[Point] = []
@@ -149,6 +154,9 @@ def create_app() -> FastAPI:
     app = FastAPI(title="video-object-remover")
     sessions: dict[str, Session] = {}
     jobs = JobManager()
+    #: one model download at a time; the UI polls this rather than being pushed to
+    model_download: dict = {"state": "idle", "model": None, "done": 0,
+                            "total": 0, "percent": 0.0, "error": None}
 
     def _session(sid: str) -> Session:
         s = sessions.get(sid)
@@ -229,6 +237,69 @@ def create_app() -> FastAPI:
     def jobs_active() -> list:
         return [{"id": j.id, "mode": j.mode, "stage": j.stage,
                  "percent": round(j.percent, 1)} for j in jobs.active()]
+
+    @app.get("/api/models")
+    def list_models() -> dict:
+        from .. import models
+        return {"models": models.status(),
+                "selected": discover.selected_model() or models.DEFAULT_ID,
+                "weights_dir": models.weights_dir(),
+                "free_bytes": models.disk_free(),
+                "download": dict(model_download)}
+
+    @app.post("/api/models/select")
+    def select_model(req: SelectModelRequest) -> dict:
+        from .. import models
+        model = models.BY_ID.get(req.model)
+        if model is None:
+            raise HTTPException(400, f"unknown model {req.model!r}")
+        if not model.usable:
+            raise HTTPException(400, model.unsupported)
+        if not models.is_installed(model):
+            raise HTTPException(400, f"{model.label} is not downloaded yet")
+        discover.write_settings({"sam_model": req.model})
+        # The warm predictors hold the previous checkpoint; drop them or the
+        # next click would still be answered by the old model.
+        for s in sessions.values():
+            s._previews.clear()
+        return {"selected": req.model, "path": models.local_path(model)}
+
+    @app.post("/api/models/download")
+    def start_model_download(req: SelectModelRequest) -> dict:
+        from .. import models
+        model = models.BY_ID.get(req.model)
+        if model is None:
+            raise HTTPException(400, f"unknown model {req.model!r}")
+        if model.blocked:
+            raise HTTPException(400, model.blocked)
+        if model_download.get("state") == "running":
+            raise HTTPException(409, f"already downloading {model_download['model']}")
+        if models.is_installed(model):
+            return {"state": "done", "model": req.model}
+
+        def run() -> None:
+            def progress(done: int, total: int) -> None:
+                model_download.update(done=done, total=total,
+                                      percent=round(100 * done / max(1, total), 1))
+            try:
+                models.download(req.model, progress)
+                model_download.update(state="done", percent=100.0, error=None)
+            except Exception as exc:                      # noqa: BLE001
+                model_download.update(state="failed", error=str(exc))
+
+        model_download.update(state="running", model=req.model, done=0,
+                              total=model.size_bytes, percent=0.0, error=None)
+        threading.Thread(target=run, daemon=True).start()
+        return dict(model_download)
+
+    @app.get("/api/models/download/status")
+    def model_download_status() -> dict:
+        return dict(model_download)
+
+    @app.delete("/api/models/{model_id}")
+    def delete_model(model_id: str) -> dict:
+        from .. import models
+        return {"removed": models.remove(model_id)}
 
     @app.get("/api/status")
     def status() -> dict:

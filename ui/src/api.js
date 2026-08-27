@@ -31,6 +31,11 @@ const form = (fields) => {
 
 export const api = {
   status: () => json('/api/status'),
+
+  models: () => json('/api/models'),
+  selectModel: (model) => json('/api/models/select', asJson({ model })),
+  downloadModel: (model) => json('/api/models/download', asJson({ model })),
+  modelDownloadStatus: () => json('/api/models/download/status'),
   health: () => json('/api/health'),
 
   openPath: (path) => json('/api/open', form({ path })),

@@ -11,6 +11,7 @@ with a shape mismatch rather than a readable error, so it is worth inferring.
 """
 from __future__ import annotations
 import glob
+import json
 import os
 from typing import Optional
 
@@ -83,13 +84,58 @@ def find_propainter() -> Optional[str]:
     return None
 
 
+def settings_path() -> str:
+    return os.path.join(app_support(), "settings.json")
+
+
+def read_settings() -> dict:
+    try:
+        with open(settings_path()) as fh:
+            return json.load(fh) or {}
+    except (OSError, ValueError):
+        return {}
+
+
+def write_settings(patch: dict) -> dict:
+    """Merge and persist. Best-effort: a read-only home should not stop a run."""
+    data = {**read_settings(), **patch}
+    try:
+        os.makedirs(app_support(), exist_ok=True)
+        tmp = settings_path() + ".tmp"
+        with open(tmp, "w") as fh:
+            json.dump(data, fh, indent=2)
+        os.replace(tmp, settings_path())
+    except OSError:
+        pass
+    return data
+
+
+def selected_model() -> Optional[str]:
+    """The model id the user picked, if any."""
+    return read_settings().get("sam_model")
+
+
 def find_sam_checkpoint() -> Optional[str]:
-    """The largest SAM 2 checkpoint we can find. ``VOR_SAM_CHECKPOINT`` is
-    authoritative for the same reason as ``VOR_PROPAINTER`` above."""
+    """The SAM checkpoint to use.
+
+    Order: ``VOR_SAM_CHECKPOINT`` (authoritative, for the same reason as
+    ``VOR_PROPAINTER`` above), then the model the user selected, then the
+    largest one lying around. Selection has to outrank "largest" or choosing
+    Tiny for speed would silently keep running Large.
+    """
     env = os.environ.get("VOR_SAM_CHECKPOINT")
     if env:
         return os.path.abspath(env) if os.path.isfile(env) else None
-    roots = [os.path.join(_repo_root(), "third_party/sam2/checkpoints"),
+
+    from . import models
+    chosen = selected_model()
+    if chosen and chosen in models.BY_ID:
+        model = models.BY_ID[chosen]
+        if models.is_installed(model):
+            return os.path.abspath(models.local_path(model))
+
+    roots = [models.weights_dir(),
+             os.path.join(_repo_root(), "third_party/sam2/checkpoints"),
              os.path.join(os.getcwd(), "third_party/sam2/checkpoints"),
              os.path.join(app_support(), "weights")]
     found: list[str] = []

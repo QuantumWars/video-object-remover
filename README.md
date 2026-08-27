@@ -86,6 +86,33 @@ video-object-remover web       # http://127.0.0.1:8765
 automatically**; the SAM config is inferred from the checkpoint filename so the
 two cannot be mismatched.
 
+### Models
+
+The app ships no weights. Pick a model in the sidebar and it downloads on
+demand into `~/Library/Application Support/VideoObjectRemover/weights` — once.
+
+| Model | Size | |
+|---|---|---|
+| SAM 2.1 Tiny | 149 MB | Fastest. Loose on thin edges and small objects. |
+| SAM 2.1 Small | 176 MB | A little more accurate for a little more time. |
+| SAM 2.1 Base+ | 309 MB | Quality/latency sweet spot. The default. |
+| SAM 2.1 Large | 856 MB | Best masks, noticeably slower. Worth it for delivery. |
+
+Downloads resume, are verified against the published size, and land through a
+`.part` file so an interrupted one can never be mistaken for a usable model.
+
+**SAM 3 is listed but not selectable, deliberately.** Two things block it, and
+both are visible in the picker rather than hidden:
+
+- Its weights are gated behind a manual access request, so an unauthenticated
+  download returns `401`. It cannot be fetched for you.
+- Its video API takes a **noun phrase** (`"the man in the grey suit"`), not the
+  point clicks this interface is built on. Supporting it means a second runner,
+  not a config line.
+
+If you have been granted access, point `VOR_SAM_CHECKPOINT` at the file — but
+the point-click workflow will not drive it until that runner exists.
+
 ### Environment overrides
 
 | Variable | Overrides |
@@ -94,6 +121,7 @@ two cannot be mismatched.
 | `VOR_SAM_CHECKPOINT` | SAM 2 `.pt` checkpoint |
 | `VOR_FFMPEG` / `VOR_FFPROBE` | the binaries every stage shells out to |
 | `VOR_PYTHON` | interpreter the desktop shell spawns |
+| `VOR_WEIGHTS_DIR` | where downloaded models are kept |
 
 Each is **authoritative**: set it to something wrong and the run fails loudly
 rather than falling back to a different binary and quietly producing something

@@ -20,6 +20,9 @@ classifiers = [
 dependencies = [
     "numpy>=1.23",
     "opencv-python>=4.6",
+    # The python.org build does not use the macOS system trust store, so the
+    # model downloader cannot verify TLS without a bundled CA set.
+    "certifi",
 ]
 
 # The web UI is optional: the CLI works without a server stack installed.

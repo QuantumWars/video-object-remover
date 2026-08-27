@@ -57,3 +57,4 @@ ui/node_modules/
 ui/dist/
 electron/node_modules/
 electron/dist/
+ui/shot*.mjs

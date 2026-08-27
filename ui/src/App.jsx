@@ -7,6 +7,7 @@ import Scrubber from './components/Scrubber'
 import OpenScreen from './components/OpenScreen'
 import JobPanel from './components/JobPanel'
 import { RotoSettings, RemoveSettings } from './components/Settings'
+import Models from './components/Models'
 import { shortenPath, basename } from './lib/paths'
 
 const DEFAULTS = {
@@ -296,14 +297,31 @@ export default function App() {
   const cancel = async () => { try { await api.cancelJob(jobId) } catch { /* gone */ } }
 
   if (!clip) {
+    // Nothing to segment with yet. The picker lives in the sidebar, which is
+    // not on screen until a clip is open, so first run has to offer it here or
+    // the app is a dead end.
+    const needsModel = status && !status.sam_checkpoint
     return (
       <div className="app">
         <div className="titlebar"><span className="brand">Video Object Remover</span></div>
-        <OpenScreen
-          onOpenPath={(p) => openWith(() => api.openPath(p))}
-          onUpload={(f) => openWith(() => api.upload(f))}
-          busy={opening} error={openError}
-        />
+        {needsModel ? (
+          <div className="open-screen">
+            <div className="setup">
+              <h1>Choose a model</h1>
+              <p>
+                Tracking needs a Segment Anything checkpoint. Pick one and it
+                downloads here — you only do this once.
+              </p>
+              <Models onChanged={() => api.status().then(setStatus).catch(() => {})} />
+            </div>
+          </div>
+        ) : (
+          <OpenScreen
+            onOpenPath={(p) => openWith(() => api.openPath(p))}
+            onUpload={(f) => openWith(() => api.upload(f))}
+            busy={opening} error={openError}
+          />
+        )}
         <StatusBar status={status} />
       </div>
     )
@@ -361,6 +379,14 @@ export default function App() {
             <h3>Zoom</h3>
             <Loupe image={shown} at={hover} size={size} />
           </div>
+
+          {/* Switching model invalidates any track and the warm predictor, so
+              clear the selection rather than leaving a mask the new weights
+              would not have produced. */}
+          <Models disabled={busy || tracking} onChanged={() => {
+            api.status().then(setStatus).catch(() => {})
+            setTracked(null); setPreview(null); setCoverage(0)
+          }} />
 
           <div className="group">
             <h3>Selection</h3>
