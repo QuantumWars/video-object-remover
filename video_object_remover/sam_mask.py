@@ -30,6 +30,23 @@ from .ffmpeg import ffmpeg_bin
 from .probe import VideoInfo
 
 
+def _require_sam2():
+    """Import SAM 2, or explain what is missing.
+
+    The bare ModuleNotFoundError names `sam2` from inside a lazy import and
+    gives no hint that a setup step was skipped — and this is now reachable,
+    because the model picker can download weights into an environment that
+    never had the package.
+    """
+    try:
+        import sam2  # noqa: F401
+    except ImportError as exc:
+        raise RuntimeError(
+            "the SAM 2 package is not installed in this environment. Run "
+            "./setup_sam.sh, or pip install it, then try again."
+        ) from exc
+
+
 def _require_checkpoint(checkpoint: Optional[str]) -> None:
     """Fail loudly on a missing checkpoint.
 
@@ -134,6 +151,7 @@ def generate(cfg: PipelineConfig, info: VideoInfo, work: str):
             print(f"[sam] cache hit ({os.path.basename(cache_dir)}) — skipping tracking")
             return mdir, bboxes
 
+    _require_sam2()
     from sam2.build_sam import build_sam2_video_predictor
 
     _require_checkpoint(cfg.sam_checkpoint)
@@ -212,6 +230,7 @@ def generate(cfg: PipelineConfig, info: VideoInfo, work: str):
 def preview(cfg: PipelineConfig, info: VideoInfo, out_path: str) -> None:
     """Render the prompt-frame mask as a green overlay so the user can check the
     selection before a full run (uses the single-image predictor — fast)."""
+    _require_sam2()
     from sam2.build_sam import build_sam2
     from sam2.sam2_image_predictor import SAM2ImagePredictor
 
@@ -254,6 +273,7 @@ class InteractivePreview:
     """
 
     def __init__(self, checkpoint: str, model_cfg: str, frame_bgr: np.ndarray):
+        _require_sam2()
         from sam2.build_sam import build_sam2
         from sam2.sam2_image_predictor import SAM2ImagePredictor
 

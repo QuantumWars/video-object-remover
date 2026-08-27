@@ -8,10 +8,12 @@ Every URL and byte count here was verified against the host rather than copied
 from documentation: a wrong URL turns "downloads automatically" into a runtime
 failure with nothing useful to say.
 
-Not every model can be fetched. `facebook/sam3` is gated behind a manual access
-request, so an unauthenticated download returns 401 — it is listed with the
-reason instead of being offered as a button that cannot work. See `AVAILABLE`
-versus the full registry.
+The `blocked` and `unsupported` fields exist because not every model can be
+fetched or driven by this interface: SAM 3, for instance, gates its weights
+behind a manual access request and prompts with noun phrases rather than the
+point clicks this app is built on. Such an entry is listed with the reason
+rather than offered as a button that cannot work — but nothing currently needs
+one, so the registry is SAM 2.1 only.
 """
 from __future__ import annotations
 import os
@@ -81,23 +83,6 @@ REGISTRY: list = [
         config="configs/sam2.1/sam2.1_hiera_l.yaml",
         url=f"{_SAM21_BASE}/sam2.1_hiera_large.pt",
         note="Best masks, noticeably slower. Worth it for delivery.",
-    ),
-    Model(
-        id="sam3", label="SAM 3", family="sam3",
-        filename="sam3.pt", size_bytes=0,
-        url="https://huggingface.co/facebook/sam3",
-        note="Segments from a noun phrase rather than clicks.",
-        blocked=(
-            "Meta gates these weights behind a manual access request, so they "
-            "cannot be fetched automatically. Request access at "
-            "huggingface.co/facebook/sam3, then point VOR_SAM_CHECKPOINT at the "
-            "file you download."
-        ),
-        unsupported=(
-            "SAM 3's video API takes text prompts, not the point clicks this "
-            "interface is built on, so it needs its own runner before it can be "
-            "selected here."
-        ),
     ),
 ]
 

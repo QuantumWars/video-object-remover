@@ -144,12 +144,46 @@ def find_sam_checkpoint() -> Optional[str]:
     return os.path.abspath(max(found, key=_rank)) if found else None
 
 
+def sam_package_installed() -> bool:
+    """Whether ``import sam2`` would succeed.
+
+    Weights and code are separate problems. The model picker can fetch a
+    checkpoint without the ``sam2`` package being present, and reporting
+    "ready" on the strength of a downloaded file alone means the first click
+    dies with ModuleNotFoundError from four frames deep. find_spec avoids
+    paying the import cost just to answer the question.
+    """
+    import importlib.util
+    try:
+        return importlib.util.find_spec("sam2") is not None
+    except (ImportError, ValueError):
+        return False
+
+
 def status() -> dict:
     """What the UI needs to tell the user what is and isn't ready."""
     pp, ck = find_propainter(), find_sam_checkpoint()
+    pkg = sam_package_installed()
+    missing = []
+    if not pkg:
+        missing.append(
+            "The SAM 2 package is not installed. Run ./setup_sam.sh, or "
+            "pip install the sam2 package into this environment.")
+    if not ck:
+        missing.append("No model checkpoint yet — choose one to download.")
+    if not pp:
+        missing.append(
+            "ProPainter was not found. Run ./setup_propainter.sh or set "
+            "VOR_PROPAINTER. (Only matte export works without it.)")
     return {
         "propainter": pp,
         "sam_checkpoint": ck,
         "sam_config": sam_config_for(ck) if ck else None,
-        "ready": bool(pp and ck),
+        "sam_package": pkg,
+        # Tracking needs the package *and* a checkpoint. Removal additionally
+        # needs ProPainter, which is why they are reported separately.
+        "can_track": bool(pkg and ck),
+        "can_remove": bool(pkg and ck and pp),
+        "ready": bool(pkg and ck and pp),
+        "missing": missing,
     }

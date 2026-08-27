@@ -44,5 +44,17 @@ def test_bad_sam_override_does_not_fall_back(tmp_path, monkeypatch):
 
 def test_status_shape():
     st = discover.status()
-    assert set(st) == {"propainter", "sam_checkpoint", "sam_config", "ready"}
-    assert isinstance(st["ready"], bool)
+    assert set(st) == {"propainter", "sam_checkpoint", "sam_config", "sam_package",
+                       "can_track", "can_remove", "ready", "missing"}
+    for key in ("ready", "can_track", "can_remove", "sam_package"):
+        assert isinstance(st[key], bool), key
+    assert isinstance(st["missing"], list)
+
+
+def test_ready_implies_both_capabilities():
+    st = discover.status()
+    if st["ready"]:
+        assert st["can_track"] and st["can_remove"]
+    # and anything not ready must say why
+    if not st["ready"]:
+        assert st["missing"]

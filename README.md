@@ -75,12 +75,15 @@ cd video-object-remover
 pip install -e ".[web]"
 
 # install PyTorch for your platform first (https://pytorch.org), then:
+./setup_sam.sh                 # the SAM 2 package  -> third_party/sam2
 ./setup_propainter.sh          # ProPainter + weights -> third_party/ProPainter
-./setup_sam.sh                 # SAM 2 + checkpoint   -> third_party/sam2
-#   ./setup_sam.sh third_party/sam2 base_plus   # smaller/faster checkpoint
 
 video-object-remover web       # http://127.0.0.1:8765
 ```
+
+`setup_sam.sh` installs the **package**; the model **weights** are downloaded
+from the picker inside the app, so you no longer have to choose a checkpoint
+size up front.
 
 `--propainter`, `--sam-checkpoint` and `--sam-config` are **discovered
 automatically**; the SAM config is inferred from the checkpoint filename so the
@@ -101,17 +104,9 @@ demand into `~/Library/Application Support/VideoObjectRemover/weights` — once.
 Downloads resume, are verified against the published size, and land through a
 `.part` file so an interrupted one can never be mistaken for a usable model.
 
-**SAM 3 is listed but not selectable, deliberately.** Two things block it, and
-both are visible in the picker rather than hidden:
-
-- Its weights are gated behind a manual access request, so an unauthenticated
-  download returns `401`. It cannot be fetched for you.
-- Its video API takes a **noun phrase** (`"the man in the grey suit"`), not the
-  point clicks this interface is built on. Supporting it means a second runner,
-  not a config line.
-
-If you have been granted access, point `VOR_SAM_CHECKPOINT` at the file — but
-the point-click workflow will not drive it until that runner exists.
+Weights and code are separate: the picker fetches checkpoints, but the `sam2`
+package still has to be installed. The app reports these independently and
+refuses to claim it is ready on the strength of a downloaded file alone.
 
 ### Environment overrides
 

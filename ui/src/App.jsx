@@ -450,7 +450,7 @@ export default function App() {
               ) : (
                 <>
                   <button className="ghost" onClick={startTrack}
-                          disabled={!hasObject || busy} style={{ width: '100%' }}>
+                          disabled={!hasObject || busy || !status?.can_track} style={{ width: '100%' }}>
                     Track across clip
                   </button>
                   <div className="sub" style={{ color: 'var(--dimmer)' }}>
@@ -493,12 +493,17 @@ export default function App() {
             ? <JobPanel job={job} mode={mode} onCancel={cancel}
                         onReset={() => setJobId(null)} />
             : <button className="primary" onClick={start}
-                      disabled={!hasObject || !output.trim() || !status?.ready || tracking}>
+                      disabled={!hasObject || !output.trim() || tracking ||
+                                (mode === 'roto' ? !status?.can_track : !status?.can_remove)}>
                 {mode === 'roto' ? 'Create matte' : 'Remove object'}
               </button>}
 
-          {!status?.ready && status && (
-            <div className="banner err">{status.hint || 'Models not ready.'}</div>
+          {/* Matte only needs SAM; removal also needs ProPainter. Reporting one
+              combined "ready" flag hid which piece was actually missing. */}
+          {status?.missing?.length > 0 && (
+            <div className="banner err">
+              {status.missing.map((m, i) => <div key={i}>{m}</div>)}
+            </div>
           )}
         </div>
       </div>
@@ -519,7 +524,11 @@ function StatusBar({ status, clip, predicting, tracking, tracked, gotMask }) {
   return (
     <div className="statusbar">
       <span className={`dot ${ready ? 'ok' : status ? 'bad' : ''}`} />
-      <span>{ready ? 'SAM 2 + ProPainter ready' : status ? 'Models missing' : 'Connecting…'}</span>
+      <span>{!status ? 'Connecting…'
+        : ready ? 'SAM 2 + ProPainter ready'
+        : !status.sam_package ? 'SAM 2 package not installed'
+        : !status.sam_checkpoint ? 'No model downloaded'
+        : 'ProPainter not found — matte only'}</span>
       {maskState && <>
         <span className="sep">|</span>
         <span className={`dot ${maskState[0]}`} />

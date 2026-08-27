@@ -1,86 +1,71 @@
-# The packaged macOS app
+# The desktop app
 
-`./packaging/make_dmg.sh` produces `packaging/build/VideoObjectRemover-<version>.dmg`.
-
-## What is (and isn't) in the bundle
-
-The app is **~180 KB**. It carries the wheel, the icon and the two setup scripts —
-and nothing else:
-
-```
-Video Object Remover.app/
-  Contents/
-    Info.plist
-    MacOS/VideoObjectRemover          # hands off to Terminal
-    Resources/
-      launcher.sh                     # first-run setup + start
-      setup_propainter.sh
-      setup_sam.sh
-      video_object_remover-<v>.whl
-      AppIcon.icns
-```
-
-PyTorch (~2.5 GB) and the model weights (~1.2 GB) are **deliberately not
-bundled**. A DMG carrying them is a 4 GB download that goes stale the moment any
-piece is updated, and it would have to be rebuilt and redistributed for every
-change to either. Instead the first launch fetches them into
-
-```
-~/Library/Application Support/VideoObjectRemover/
-  venv/              private Python environment
-  ProPainter/        checkout + weights
-  sam2/              checkout + checkpoint
-  .setup-complete    the marker that makes later launches instant
-```
-
-Delete that directory to force a clean re-setup.
-
-## Why it opens a Terminal
-
-First run downloads ~4 GB and takes 10–20 minutes. A silent bouncing Dock icon
-for twenty minutes is indistinguishable from a hang, and when something *does*
-fail — no `ffmpeg`, no Python, a network drop — the error has to be visible.
-So the bundle executable is one line:
+The app is an Electron shell around the same FastAPI backend the `web`
+subcommand serves. It does not reimplement anything: it starts the backend,
+waits for it, and shows the interface.
 
 ```bash
-exec /usr/bin/open -a Terminal "$RES/launcher.sh"
+npm --prefix ui install && npm --prefix ui run build
+npm --prefix electron install
+npm --prefix electron start
 ```
 
-`open -a Terminal` rather than `osascript`, because it quotes the path itself and
-the bundle name contains spaces.
+## How it starts
 
-## Gatekeeper
+1. Reserve a free port with `net.createServer().listen(0)`.
+2. Spawn `python -m video_object_remover web --port <n> --strict-port --no-browser`.
+3. Poll `/api/health` with backoff (100 ms → 500 ms) until it answers.
+4. `loadURL('http://127.0.0.1:<n>')`.
 
-The build is **ad-hoc signed** (`codesign --sign -`), not notarised. Ad-hoc
-signing matters: without it a downloaded app is reported as *"damaged and can't
-be opened"*, which reads like a corrupt file. With it, the message is the honest
-*"unidentified developer"*, and **right-click → Open** works.
+`--strict-port` is load-bearing. Without it the server falls forward to the next
+free port when its own is taken, and the shell would poll a port nothing is
+listening on until it timed out — with a healthy backend running elsewhere.
 
-For distribution outside your own machine you need a paid Developer ID plus
-notarisation — otherwise every user does the right-click dance.
+The renderer is sandboxed with context isolation. Because the page is *served*
+rather than loaded from `file://`, images and `fetch` work normally and none of
+the usual base64-over-IPC workarounds are needed. Anything privileged — native
+save/open panels, Finder — goes through the preload bridge as `window.vor`, and
+the interface feature-detects it so a plain browser still works.
 
-## Prerequisites the app cannot install
+## What it finds, and where
 
-`launcher.sh` checks these and exits with a readable message rather than failing
-deep in a stack trace:
+| | |
+|---|---|
+| Interpreter | `VOR_PYTHON`, else `<app support>/venv/bin/python3` |
+| Weights | `<app support>/weights`, downloaded from the model picker |
+| ProPainter | `VOR_PROPAINTER`, else a checkout under the repo or app support |
+| ffmpeg | `VOR_FFMPEG`, else `<app support>/bin/ffmpeg`, else `PATH` |
+| Logs | `<app support>/logs/server.log` |
 
-- **Python 3.9+** — it probes `python3.13 … python3` in order and verifies the
-  version rather than trusting the name.
-- **ffmpeg** — `brew install ffmpeg`.
+`<app support>` is `~/Library/Application Support/VideoObjectRemover`.
 
-## Changing the icon
+The spawned environment has `PYTHONHOME`, `PYTHONPATH`, `VIRTUAL_ENV` and
+`PYTHONSTARTUP` removed: a user with conda or pyenv in their shell profile would
+otherwise poison the interpreter the shell just resolved.
 
-`packaging/make_icon.py` draws it (a subject dissolving inside a selection
-marquee) and renders the `.icns` through `iconutil`. It is code rather than a
-checked-in binary so it can be adjusted without a design tool. It must stay
-legible at 16px — check the small sizes before committing a change.
+## Quitting
 
-## Building a release
+Render jobs are started in their own process group so cancelling one can
+`killpg` it. That means killing the server alone would leave ProPainter running
+— a multi-GB torch process with nothing to stop it. Quitting mid-render asks
+first, then calls `POST /api/shutdown`, which cancels every job before the
+server exits.
 
-```bash
-./packaging/make_dmg.sh
-shasum -a 256 packaging/build/VideoObjectRemover-*.dmg
-```
+To check: quit during a render, then `pgrep -fl propainter` should print
+nothing.
 
-Attach the DMG to a GitHub release. `packaging/build/`, `*.dmg` and `*.icns` are
-git-ignored.
+## Not done yet
+
+There is **no installer**. The app currently expects the Python environment to
+already exist, so it is not something you can hand to someone else.
+
+A self-contained `.pkg` would need to place its own Python and ffmpeg, and be
+signed with a **Developer ID Application** certificate and notarised. An Apple
+Development certificate is not sufficient — it cannot sign for distribution
+outside the App Store and cannot be notarised, so Gatekeeper will reject the
+result on any machine but the one that built it.
+
+Ad-hoc signing (`codesign --force --deep --sign -`) is the fallback. It makes
+Gatekeeper say "unidentified developer" and require right-click → Open, which is
+a poor first impression but at least installable. An *unsigned* bundle reads as
+"damaged", which is worse.

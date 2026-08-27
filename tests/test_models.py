@@ -52,8 +52,13 @@ def test_config_matches_what_discovery_infers():
 
 
 def test_available_excludes_unsupported_models():
+    """AVAILABLE is what the picker may offer. Nothing is currently excluded,
+    but the mechanism has to keep working for when something is."""
     assert all(m.usable for m in models.AVAILABLE)
-    assert any(not m.usable for m in models.REGISTRY), "fixture expects one"
+    blocked = models.Model(id="x", label="X", family="other", filename="x.pt",
+                           size_bytes=1, unsupported="needs its own runner")
+    assert not blocked.usable
+    assert blocked not in models.AVAILABLE
 
 
 # --- installation state --------------------------------------------------
@@ -82,11 +87,21 @@ def test_unknown_model_is_rejected():
         models.download("nope")
 
 
-def test_gated_model_explains_itself_instead_of_failing_on_the_network():
-    # facebook/sam3 returns 401 unauthenticated; surfacing that as a raw HTTP
-    # error would tell the user nothing about what to do.
-    with pytest.raises(models.DownloadError, match="access request"):
-        models.download("sam3")
+def test_gated_model_explains_itself_instead_of_failing_on_the_network(monkeypatch):
+    """A model whose weights need a manual access request must say so rather
+    than surfacing a raw 401, which tells the user nothing about what to do."""
+    gated = models.Model(
+        id="gated", label="Gated", family="sam2", filename="g.pt",
+        size_bytes=1, url="https://example.invalid/g.pt",
+        blocked="Request access first, then set VOR_SAM_CHECKPOINT.")
+    monkeypatch.setitem(models.BY_ID, "gated", gated)
+
+    def explode(*a, **k):
+        raise AssertionError("should not have hit the network")
+    monkeypatch.setattr(models.urllib.request, "urlopen", explode)
+
+    with pytest.raises(models.DownloadError, match="Request access"):
+        models.download("gated")
 
 
 def test_download_is_a_noop_when_already_installed(isolated_weights, monkeypatch):
@@ -128,3 +143,61 @@ def test_selecting_an_absent_model_falls_back_rather_than_breaking(
 
     discover.write_settings({"sam_model": "large"})       # not on disk
     assert os.path.basename(discover.find_sam_checkpoint()) == "sam2.1_hiera_small.pt"
+
+
+# --- readiness -----------------------------------------------------------
+
+def _block_sam2(monkeypatch):
+    real = __import__("importlib.util", fromlist=["util"]).find_spec
+
+    def fake(name, *a, **k):
+        if name == "sam2" or name.startswith("sam2."):
+            return None
+        return real(name, *a, **k)
+    monkeypatch.setattr("importlib.util.find_spec", fake)
+
+
+def test_ready_is_false_without_the_sam2_package(monkeypatch, tmp_path, isolated_weights):
+    """Weights and code are separate problems. Reporting ready on the strength
+    of a downloaded checkpoint alone sends the user to a ModuleNotFoundError."""
+    monkeypatch.setattr(discover, "app_support", lambda: str(tmp_path))
+    monkeypatch.delenv("VOR_SAM_CHECKPOINT", raising=False)
+    m = models.BY_ID["tiny"]
+    _write(isolated_weights / m.filename, m.size_bytes)
+    _block_sam2(monkeypatch)
+
+    st = discover.status()
+    assert st["sam_checkpoint"], "the checkpoint is present"
+    assert st["sam_package"] is False
+    assert st["can_track"] is False and st["ready"] is False
+    assert any("package is not installed" in x for x in st["missing"])
+
+
+def test_status_separates_tracking_from_removal(monkeypatch, tmp_path, isolated_weights):
+    """A matte needs no inpainter, so a missing ProPainter must not read as
+    'nothing works'."""
+    monkeypatch.setattr(discover, "app_support", lambda: str(tmp_path))
+    monkeypatch.delenv("VOR_SAM_CHECKPOINT", raising=False)
+    monkeypatch.setenv("VOR_PROPAINTER", str(tmp_path / "absent"))
+    m = models.BY_ID["tiny"]
+    _write(isolated_weights / m.filename, m.size_bytes)
+    monkeypatch.setattr(discover, "sam_package_installed", lambda: True)
+
+    st = discover.status()
+    assert st["can_track"] is True
+    assert st["can_remove"] is False
+
+
+def test_missing_sam2_raises_something_readable(monkeypatch):
+    from video_object_remover import sam_mask
+    import builtins
+    real_import = builtins.__import__
+
+    def fake(name, *a, **k):
+        if name == "sam2" or name.startswith("sam2."):
+            raise ImportError("blocked")
+        return real_import(name, *a, **k)
+    monkeypatch.setattr(builtins, "__import__", fake)
+
+    with pytest.raises(RuntimeError, match="not installed"):
+        sam_mask._require_sam2()
