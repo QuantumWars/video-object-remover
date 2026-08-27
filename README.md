@@ -184,11 +184,25 @@ Two ways to send the clip:
 Results come back on a new track at the same timecode, into the media pool, or
 wired into the clip's Fusion comp.
 
-> Measured on Resolve 21.0.4.5 (Free): a comp built by a script **does** render,
-> and a matte bound through `SetInput("MediaID", …)` renders with it. What an
-> `EffectMask` on a `MediaIn` does *not* do is cut the picture — it restricts the
-> effect a node applies, and a MediaIn applies none. For a cut-out, use the
-> ProRes 4444 output, which carries a real alpha channel and needs no comp.
+### Cutting out vs driving a grade
+
+**To cut an object out, use ProRes 4444 on a new track.** Resolve reads the
+embedded alpha natively — no Fusion, no scripting. That is the supported path.
+
+The Fusion matte node is for *driving* a grade or effect, not for compositing.
+Measured on Resolve 21.0.4.5 (Free):
+
+| | |
+|---|---|
+| A comp built by a script | **renders** — an inserted Blur took frame sharpness from 77.7 to 29.2 |
+| A matte bound via `SetInput("MediaID", …)` | **renders** |
+| `EffectMask` limiting an effect | **works** — the same Blur behind a matte dropped to 0.18 vs 5.91 full-frame |
+| `EffectMask` on a `MediaIn` cutting the picture | **no** — 0.02 difference; it restricts an effect, and a MediaIn applies none |
+| `SetTrackEnable` | **no-op** — returns `True`, leaves the track enabled |
+| `AddClipMattesToMediaPool` | **absent on Free** — the getter and delete exist, the setter does not |
+
+So there is no scriptable route to a Resolve external matte on Free, and the
+comp route cannot composite. ProRes 4444 does both, correctly, with none of it.
 
 ## Know before you render: the background-revelation check
 

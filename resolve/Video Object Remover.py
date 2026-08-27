@@ -57,9 +57,9 @@ RETURN_MODES = [
      "Put the result on a video track above this clip, at the same timecode."),
     ("media_pool", "Media pool only",
      "Import it and leave the timeline alone."),
-    ("luma_matte", "Wire into the Fusion comp",
-     "Import the matte and attach it as an effect mask. Ready to drive a "
-     "node; does not cut the picture by itself."),
+    ("luma_matte", "Add a matte node to the comp",
+     "For driving a grade or effect. To cut the object out, use 'New track "
+     "above' with the ProRes 4444 output instead."),
 ]
 
 
@@ -516,12 +516,17 @@ def wire_luma_matte(timeline, clip, session):
 
         media_in.EffectMask = node.Output
         media_in.SetInput("MaskChannel", 5)          # 5 = luminance
-        media_in.SetInput("MultiplyByMask", 1)
 
-        return True, ("Matte imported and wired into the Fusion comp as "
-                      f"'{MATTE_NODE}'. It will not cut the picture on its own "
-                      "— hang an effect off it, or use the ProRes 4444 output, "
-                      "which carries a real alpha channel.")
+        note = (f"Matte added to the Fusion comp as '{MATTE_NODE}'. Hang an "
+                f"effect off it — it does not cut the picture by itself.")
+        # A matte made from the original media is at the *source* resolution,
+        # while the comp works at timeline resolution. They only line up when
+        # the two match, which is what "Timeline render" guarantees.
+        if session.get("source_mode") == "file":
+            note += (" It was made from the original media, so if this clip is "
+                     "scaled or letterboxed on the timeline the matte will not "
+                     "line up — re-run with 'Timeline render' if so.")
+        return True, note
     except Exception as exc:                                  # noqa: BLE001
         return False, f"could not wire the matte: {exc}"
 
