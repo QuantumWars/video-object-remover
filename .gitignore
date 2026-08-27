@@ -51,3 +51,7 @@ dist/
 packaging/build/
 *.dmg
 *.icns
+
+# --- UI build ---
+ui/node_modules/
+ui/dist/

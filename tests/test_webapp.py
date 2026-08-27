@@ -94,8 +94,25 @@ def test_unknown_job_is_404(client):
 def test_index_is_served(client):
     r = client.get("/")
     assert r.status_code == 200
-    # the click contract is the product; it must be stated on the page
-    assert "Left click" in r.text and "Right click" in r.text
+    # The UI is a Vite build now, so index.html is a shell: what matters is that
+    # it mounts the app and points at a bundle. Serving a shell with no script
+    # is the blank-page failure, and it still returns 200.
+    assert 'id="root"' in r.text
+    assert "<script" in r.text and "assets/" in r.text
+
+
+def test_click_contract_is_stated_in_the_ui():
+    """The click contract is the product — one ambiguous click gives a bad
+    mask, and the user has to be told that left includes and right excludes.
+    It lives in the bundle rather than the HTML, but it still has to be there."""
+    import glob
+    import os
+    from video_object_remover.webapp.server import _STATIC
+    bundles = glob.glob(os.path.join(_STATIC, "assets", "*.js"))
+    if not bundles:
+        pytest.skip("UI not built — run npm --prefix ui run build")
+    text = "".join(open(b, encoding="utf-8").read() for b in bundles)
+    assert "Left click" in text and "Right click" in text
 
 
 def test_free_port_returns_preferred_when_available():
